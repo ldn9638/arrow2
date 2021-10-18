@@ -33,7 +33,7 @@ prost = "0.8.0"
 prost-derive = "0.8.0"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"]}
-
+arrow-format = { version = "*", optional = true, features = ["ipc"] }
 #[lib]
 #name = "flight"
 #path = "src/lib.rs"

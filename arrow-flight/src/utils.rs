@@ -26,12 +26,13 @@ use arrow2::{
     datatypes::*,
     error::{ArrowError, Result},
     io::ipc,
-    io::ipc::gen::Schema::MetadataVersion,
     io::ipc::read::read_record_batch,
     io::ipc::write,
     io::ipc::write::common::{encoded_batch, DictionaryTracker, EncodedData, IpcWriteOptions},
     record_batch::RecordBatch,
 };
+use arrow2::io::ipc::write::MetadataVersion;
+
 
 /// Convert a `RecordBatch` to a vector of `FlightData` representing the bytes of the dictionaries
 /// and a `FlightData` representing the bytes of the batch's values
@@ -103,7 +104,7 @@ fn flight_schema_as_encoded_data(arrow_schema: &Schema, options: &IpcWriteOption
 
 /// Deserialize an IPC message into a schema
 fn schema_from_bytes(bytes: &[u8]) -> Result<Schema> {
-    if let Ok(ipc) = ipc::root_as_message(bytes) {
+    if let Ok(ipc) = ipc::convert::ipc::root_as_message(bytes) {
         if let Some((schema, _)) = ipc.header_as_schema().map(ipc::fb_to_schema) {
             Ok(schema)
         } else {
@@ -152,7 +153,7 @@ pub fn flight_data_to_arrow_batch(
     dictionaries_by_field: &[Option<Arc<dyn Array>>],
 ) -> Result<RecordBatch> {
     // check that the data_header is a record batch message
-    let message = ipc::root_as_message(&data.data_header[..])
+    let message = ipc::convert::ipc::root_as_message(&data.data_header[..])
         .map_err(|err| ArrowError::Ipc(format!("Unable to get root as message: {:?}", err)))?;
 
     let mut reader = std::io::Cursor::new(&data.data_body);

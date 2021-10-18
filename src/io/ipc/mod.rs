@@ -77,9 +77,9 @@
 //! [2](https://github.com/jorgecarleitao/arrow2/blob/main/examples/ipc_file_write.rs),
 //! [3](https://github.com/jorgecarleitao/arrow2/tree/main/examples/ipc_pyarrow)).
 
-mod compression;
-mod convert;
-mod endianess;
+pub mod compression;
+pub mod convert;
+pub mod endianess;
 
 pub use convert::fb_to_schema;
 pub mod read;

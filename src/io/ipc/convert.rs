@@ -21,7 +21,7 @@ use arrow_format::ipc::flatbuffers::{
     FlatBufferBuilder, ForwardsUOffset, UnionWIPOffset, Vector, WIPOffset,
 };
 use std::collections::{BTreeMap, HashMap};
-mod ipc {
+pub mod ipc {
     pub use arrow_format::ipc::File::*;
     pub use arrow_format::ipc::Message::*;
     pub use arrow_format::ipc::Schema::*;
