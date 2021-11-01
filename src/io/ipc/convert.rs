@@ -28,7 +28,7 @@ pub mod ipc {
 }
 
 use crate::datatypes::{
-    get_extension, DataType, Extension, Field, IntervalUnit, Metadata, Schema, TimeUnit,
+    get_extension, DataType, Extension, Field, IntervalUnit, Metadata, Schema, TimeUnit, UnionMode,
 };
 use crate::io::ipc::endianess::is_native_little_endian;
 
@@ -191,7 +191,7 @@ fn get_data_type(field: ipc::Field, extension: Extension, may_be_dictionary: boo
         ipc::Type::LargeUtf8 => DataType::LargeUtf8,
         ipc::Type::FixedSizeBinary => {
             let fsb = field.type_as_fixed_size_binary().unwrap();
-            DataType::FixedSizeBinary(fsb.byteWidth())
+            DataType::FixedSizeBinary(fsb.byteWidth() as usize)
         }
         ipc::Type::FloatingPoint => {
             let float = field.type_as_floating_point().unwrap();
@@ -273,7 +273,7 @@ fn get_data_type(field: ipc::Field, extension: Extension, may_be_dictionary: boo
                 panic!("expect a list to have one child")
             }
             let fsl = field.type_as_fixed_size_list().unwrap();
-            DataType::FixedSizeList(Box::new(children.get(0).into()), fsl.listSize())
+            DataType::FixedSizeList(Box::new(children.get(0).into()), fsl.listSize() as usize)
         }
         ipc::Type::Struct_ => {
             let mut fields = vec![];
@@ -292,7 +292,7 @@ fn get_data_type(field: ipc::Field, extension: Extension, may_be_dictionary: boo
         ipc::Type::Union => {
             let type_ = field.type_as_union().unwrap();
 
-            let is_sparse = type_.mode() == ipc::UnionMode::Sparse;
+            let mode = UnionMode::sparse(type_.mode() == ipc::UnionMode::Sparse);
 
             let ids = type_.typeIds().map(|x| x.iter().collect());
 
@@ -303,7 +303,7 @@ fn get_data_type(field: ipc::Field, extension: Extension, may_be_dictionary: boo
             } else {
                 vec![]
             };
-            DataType::Union(fields, ids, is_sparse)
+            DataType::Union(fields, ids, mode)
         }
         ipc::Type::Map => {
             let map = field.type_as_map().unwrap();
@@ -704,13 +704,13 @@ pub(crate) fn get_fb_field_type<'a>(
                 children: Some(fbb.create_vector(&empty_fields[..])),
             }
         }
-        Union(fields, ids, is_sparse) => {
+        Union(fields, ids, mode) => {
             let children: Vec<_> = fields.iter().map(|field| build_field(fbb, field)).collect();
 
             let ids = ids.as_ref().map(|ids| fbb.create_vector(ids));
 
             let mut builder = ipc::UnionBuilder::new(fbb);
-            builder.add_mode(if *is_sparse {
+            builder.add_mode(if mode.is_sparse() {
                 ipc::UnionMode::Sparse
             } else {
                 ipc::UnionMode::Dense
