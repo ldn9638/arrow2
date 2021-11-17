@@ -34,21 +34,11 @@ impl<O: Offset, M: MutableArray + Default> MutableListArray<O, M> {
 
         let mut offsets = MutableBuffer::<O>::with_capacity(capacity + 1);
         offsets.push(O::default());
-        assert_eq!(values.len(), 0);
         Self {
             data_type,
             offsets,
             values,
             validity: None,
-        }
-    }
-
-    /// Shrinks the capacity of the [`MutableListArray`] to fit its current length.
-    pub fn shrink_to_fit(&mut self) {
-        self.values.shrink_to_fit();
-        self.offsets.shrink_to_fit();
-        if let Some(validity) = &mut self.validity {
-            validity.shrink_to_fit()
         }
     }
 }
@@ -164,6 +154,11 @@ impl<O: Offset, M: MutableArray> MutableListArray<O, M> {
         &mut self.values
     }
 
+    /// The offseta
+    pub fn offsets(&self) -> &MutableBuffer<O> {
+        &self.offsets
+    }
+
     /// The values
     pub fn values(&self) -> &M {
         &self.values
@@ -187,6 +182,15 @@ impl<O: Offset, M: MutableArray> MutableListArray<O, M> {
     pub fn into_arc(self) -> Arc<dyn Array> {
         let a: ListArray<O> = self.into();
         Arc::new(a)
+    }
+
+    /// Shrinks the capacity of the [`MutableListArray`] to fit its current length.
+    pub fn shrink_to_fit(&mut self) {
+        self.values.shrink_to_fit();
+        self.offsets.shrink_to_fit();
+        if let Some(validity) = &mut self.validity {
+            validity.shrink_to_fit()
+        }
     }
 }
 

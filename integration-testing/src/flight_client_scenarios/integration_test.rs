@@ -33,7 +33,7 @@ use arrow_format::ipc::Message::MessageHeader;
 use futures::{channel::mpsc, sink::SinkExt, stream, StreamExt};
 use tonic::{Request, Streaming};
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 type ArrayRef = Arc<dyn Array>;
 type SchemaRef = Arc<Schema>;
@@ -78,8 +78,9 @@ async fn upload_data(
 ) -> Result {
     let (mut upload_tx, upload_rx) = mpsc::channel(10);
 
-    let options = write::IpcWriteOptions::default();
-    let mut schema = flight::serialize_schema(&schema, &options);
+    let options = write::WriteOptions { compression: None };
+
+    let mut schema = flight::serialize_schema(&schema);
     schema.flight_descriptor = Some(descriptor.clone());
     upload_tx.send(schema).await?;
 
@@ -129,7 +130,7 @@ async fn send_batch(
     upload_tx: &mut mpsc::Sender<FlightData>,
     metadata: &[u8],
     batch: &RecordBatch,
-    options: &write::IpcWriteOptions,
+    options: &write::WriteOptions,
 ) -> Result {
     let (dictionary_flight_data, mut batch_flight_data) = serialize_batch(batch, options);
 
@@ -198,10 +199,10 @@ async fn consume_flight_location(
     // first FlightData. Ignore this one.
     let _schema_again = resp.next().await.unwrap();
 
-    let mut dictionaries_by_field = vec![None; schema.fields().len()];
+    let mut dictionaries = Default::default();
 
     for (counter, expected_batch) in expected_data.iter().enumerate() {
-        let data = receive_batch_flight_data(&mut resp, schema.clone(), &mut dictionaries_by_field)
+        let data = receive_batch_flight_data(&mut resp, schema.clone(), &mut dictionaries)
             .await
             .unwrap_or_else(|| {
                 panic!(
@@ -214,7 +215,7 @@ async fn consume_flight_location(
         let metadata = counter.to_string().into_bytes();
         assert_eq!(metadata, data.app_metadata);
 
-        let actual_batch = deserialize_batch(&data, schema.clone(), true, &dictionaries_by_field)
+        let actual_batch = deserialize_batch(&data, schema.clone(), true, &dictionaries)
             .expect("Unable to convert flight data to Arrow batch");
 
         assert_eq!(expected_batch.schema(), actual_batch.schema());
@@ -244,7 +245,7 @@ async fn consume_flight_location(
 async fn receive_batch_flight_data(
     resp: &mut Streaming<FlightData>,
     schema: SchemaRef,
-    dictionaries_by_field: &mut [Option<ArrayRef>],
+    dictionaries: &mut HashMap<usize, Arc<dyn Array>>,
 ) -> Option<FlightData> {
     let mut data = resp.next().await?.ok()?;
     let mut message =
@@ -258,7 +259,7 @@ async fn receive_batch_flight_data(
                 .expect("Error parsing dictionary"),
             &schema,
             true,
-            dictionaries_by_field,
+            dictionaries,
             &mut reader,
             0,
         )

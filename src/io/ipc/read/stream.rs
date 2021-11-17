@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -29,8 +30,6 @@ use crate::record_batch::RecordBatch;
 use super::super::convert;
 use super::super::CONTINUATION_MARKER;
 use super::common::*;
-
-type ArrayRef = Arc<dyn Array>;
 
 #[derive(Debug)]
 pub struct StreamMetadata {
@@ -110,15 +109,17 @@ impl StreamState {
 
 /// Reads the next item, yielding `None` if the stream is done,
 /// and a [`StreamState`] otherwise.
-pub fn read_next<R: Read>(
+fn read_next<R: Read>(
     reader: &mut R,
     metadata: &StreamMetadata,
-    dictionaries_by_field: &mut Vec<Option<ArrayRef>>,
+    dictionaries: &mut HashMap<usize, Arc<dyn Array>>,
+    message_buffer: &mut Vec<u8>,
+    data_buffer: &mut Vec<u8>,
 ) -> Result<Option<StreamState>> {
     // determine metadata length
-    let mut meta_size: [u8; 4] = [0; 4];
+    let mut meta_length: [u8; 4] = [0; 4];
 
-    match reader.read_exact(&mut meta_size) {
+    match reader.read_exact(&mut meta_length) {
         Ok(()) => (),
         Err(e) => {
             return if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -132,25 +133,25 @@ pub fn read_next<R: Read>(
         }
     }
 
-    let meta_len = {
+    let meta_length = {
         // If a continuation marker is encountered, skip over it and read
         // the size from the next four bytes.
-        if meta_size == CONTINUATION_MARKER {
-            reader.read_exact(&mut meta_size)?;
+        if meta_length == CONTINUATION_MARKER {
+            reader.read_exact(&mut meta_length)?;
         }
-        i32::from_le_bytes(meta_size)
+        i32::from_le_bytes(meta_length) as usize
     };
 
-    if meta_len == 0 {
+    if meta_length == 0 {
         // the stream has ended, mark the reader as finished
         return Ok(None);
     }
 
-    let mut meta_buffer = vec![0; meta_len as usize];
-    reader.read_exact(&mut meta_buffer)?;
+    message_buffer.clear();
+    message_buffer.resize(meta_length, 0);
+    reader.read_exact(message_buffer)?;
 
-    let vecs = &meta_buffer.to_vec();
-    let message = ipc::Message::root_as_message(vecs)
+    let message = ipc::Message::root_as_message(message_buffer)
         .map_err(|err| ArrowError::Ipc(format!("Unable to get root as message: {:?}", err)))?;
 
     match message.header_type() {
@@ -162,17 +163,18 @@ pub fn read_next<R: Read>(
                 ArrowError::Ipc("Unable to read IPC message as record batch".to_string())
             })?;
             // read the block that makes up the record batch into a buffer
-            let mut buf = vec![0; message.bodyLength() as usize];
-            reader.read_exact(&mut buf)?;
+            data_buffer.clear();
+            data_buffer.resize(message.bodyLength() as usize, 0);
+            reader.read_exact(data_buffer)?;
 
-            let mut reader = std::io::Cursor::new(buf);
+            let mut reader = std::io::Cursor::new(data_buffer);
 
             read_record_batch(
                 batch,
                 metadata.schema.clone(),
                 None,
                 metadata.is_little_endian,
-                dictionaries_by_field,
+                dictionaries,
                 metadata.version,
                 &mut reader,
                 0,
@@ -193,13 +195,13 @@ pub fn read_next<R: Read>(
                 batch,
                 &metadata.schema,
                 metadata.is_little_endian,
-                dictionaries_by_field,
+                dictionaries,
                 &mut dict_reader,
                 0,
             )?;
 
             // read the next message until we encounter a RecordBatch
-            read_next(reader, metadata, dictionaries_by_field)
+            read_next(reader, metadata, dictionaries, message_buffer, data_buffer)
         }
         ipc::Message::MessageHeader::NONE => Ok(Some(StreamState::Waiting)),
         t => Err(ArrowError::Ipc(format!(
@@ -218,8 +220,10 @@ pub fn read_next<R: Read>(
 pub struct StreamReader<R: Read> {
     reader: R,
     metadata: StreamMetadata,
-    dictionaries_by_field: Vec<Option<ArrayRef>>,
+    dictionaries: HashMap<usize, Arc<dyn Array>>,
     finished: bool,
+    data_buffer: Vec<u8>,
+    message_buffer: Vec<u8>,
 }
 
 impl<R: Read> StreamReader<R> {
@@ -229,12 +233,13 @@ impl<R: Read> StreamReader<R> {
     /// encounter a schema.
     /// To check if the reader is done, use `is_finished(self)`
     pub fn new(reader: R, metadata: StreamMetadata) -> Self {
-        let fields = metadata.schema.fields().len();
         Self {
             reader,
             metadata,
-            dictionaries_by_field: vec![None; fields],
+            dictionaries: Default::default(),
             finished: false,
+            data_buffer: vec![],
+            message_buffer: vec![],
         }
     }
 
@@ -255,7 +260,9 @@ impl<R: Read> StreamReader<R> {
         let batch = read_next(
             &mut self.reader,
             &self.metadata,
-            &mut self.dictionaries_by_field,
+            &mut self.dictionaries,
+            &mut self.message_buffer,
+            &mut self.data_buffer,
         )?;
         if batch.is_none() {
             self.finished = true;

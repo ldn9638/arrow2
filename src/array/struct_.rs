@@ -148,6 +148,11 @@ impl StructArray {
 
 // Accessors
 impl StructArray {
+    #[inline]
+    fn len(&self) -> usize {
+        self.values[0].len()
+    }
+
     /// The optional validity.
     #[inline]
     pub fn validity(&self) -> Option<&Bitmap> {
@@ -184,7 +189,7 @@ impl Array for StructArray {
 
     #[inline]
     fn len(&self) -> usize {
-        self.values[0].len()
+        self.len()
     }
 
     #[inline]
@@ -223,24 +228,30 @@ unsafe impl ToFfi for StructArray {
         vec![self.validity.as_ref().map(|x| x.as_ptr())]
     }
 
-    fn offset(&self) -> usize {
-        // we do not support offsets in structs. Instead, if an FFI we slice the incoming arrays
-        0
-    }
-
     fn children(&self) -> Vec<Arc<dyn Array>> {
         self.values.clone()
+    }
+
+    fn offset(&self) -> Option<usize> {
+        Some(
+            self.validity
+                .as_ref()
+                .map(|bitmap| bitmap.offset())
+                .unwrap_or_default(),
+        )
+    }
+
+    fn to_ffi_aligned(&self) -> Self {
+        self.clone()
     }
 }
 
 impl<A: ffi::ArrowArrayRef> FromFfi<A> for StructArray {
     unsafe fn try_from_ffi(array: A) -> Result<Self> {
-        let field = array.field();
-        let fields = Self::get_fields(field.data_type()).to_vec();
+        let data_type = array.field().data_type().clone();
+        let fields = Self::get_fields(&data_type);
 
-        let length = array.array().len();
-        let offset = array.array().offset();
-        let mut validity = unsafe { array.validity() }?;
+        let validity = unsafe { array.validity() }?;
         let values = (0..fields.len())
             .map(|index| {
                 let child = array.child(index)?;
@@ -248,9 +259,6 @@ impl<A: ffi::ArrowArrayRef> FromFfi<A> for StructArray {
             })
             .collect::<Result<Vec<Arc<dyn Array>>>>()?;
 
-        if offset > 0 {
-            validity = validity.map(|x| x.slice(offset, length))
-        }
-        Ok(Self::from_data(DataType::Struct(fields), values, validity))
+        Ok(Self::from_data(data_type, values, validity))
     }
 }

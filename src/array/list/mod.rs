@@ -25,7 +25,6 @@ pub struct ListArray<O: Offset> {
     offsets: Buffer<O>,
     values: Arc<dyn Array>,
     validity: Option<Bitmap>,
-    offset: usize,
 }
 
 impl<O: Offset> ListArray<O> {
@@ -78,7 +77,6 @@ impl<O: Offset> ListArray<O> {
             offsets,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -107,7 +105,6 @@ impl<O: Offset> ListArray<O> {
             offsets,
             values: self.values.clone(),
             validity,
-            offset: self.offset + offset,
         }
     }
 
@@ -126,6 +123,12 @@ impl<O: Offset> ListArray<O> {
 
 // Accessors
 impl<O: Offset> ListArray<O> {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
     /// Returns the element at index `i`
     #[inline]
     pub fn value(&self, i: usize) -> Box<dyn Array> {
@@ -144,8 +147,8 @@ impl<O: Offset> ListArray<O> {
     /// Assumes that the `i < self.len`.
     #[inline]
     pub unsafe fn value_unchecked(&self, i: usize) -> Box<dyn Array> {
-        let offset = *self.offsets.as_ptr().add(i);
-        let offset_1 = *self.offsets.as_ptr().add(i + 1);
+        let offset = *self.offsets.get_unchecked(i);
+        let offset_1 = *self.offsets.get_unchecked(i + 1);
         let length = (offset_1 - offset).to_usize();
 
         self.values.slice_unchecked(offset.to_usize(), length)
@@ -214,7 +217,7 @@ impl<O: Offset> Array for ListArray<O> {
 
     #[inline]
     fn len(&self) -> usize {
-        self.offsets.len() - 1
+        self.len()
     }
 
     #[inline]

@@ -1,7 +1,7 @@
 //! Definition of basic mul operations with primitive arrays
 use std::ops::Mul;
 
-use num_traits::{ops::overflowing::OverflowingMul, CheckedMul, SaturatingMul, WrappingMul, Zero};
+use num_traits::{ops::overflowing::OverflowingMul, CheckedMul, SaturatingMul, WrappingMul};
 
 use crate::compute::arithmetics::basic::check_same_type;
 use crate::compute::arithmetics::ArrayWrappingMul;
@@ -10,7 +10,7 @@ use crate::{
     bitmap::Bitmap,
     compute::{
         arithmetics::{
-            ArrayCheckedMul, ArrayMul, ArrayOverflowingMul, ArraySaturatingMul, NotI128,
+            ArrayCheckedMul, ArrayMul, ArrayOverflowingMul, ArraySaturatingMul, NativeArithmetics,
         },
         arity::{
             binary, binary_checked, binary_with_bitmap, unary, unary_checked, unary_with_bitmap,
@@ -88,7 +88,7 @@ where
 /// ```
 pub fn checked_mul<T>(lhs: &PrimitiveArray<T>, rhs: &PrimitiveArray<T>) -> Result<PrimitiveArray<T>>
 where
-    T: NativeType + CheckedMul<Output = T> + Zero,
+    T: NativeType + CheckedMul<Output = T>,
 {
     check_same_type(lhs, rhs)?;
 
@@ -159,22 +159,18 @@ where
 // Implementation of ArrayMul trait for PrimitiveArrays
 impl<T> ArrayMul<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + Mul<Output = T> + NotI128,
+    T: NativeArithmetics + Mul<Output = T>,
 {
-    type Output = Self;
-
-    fn mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         mul(self, rhs)
     }
 }
 
 impl<T> ArrayWrappingMul<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + WrappingMul<Output = T> + NotI128,
+    T: NativeArithmetics + WrappingMul<Output = T>,
 {
-    type Output = Self;
-
-    fn wrapping_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn wrapping_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         wrapping_mul(self, rhs)
     }
 }
@@ -182,11 +178,9 @@ where
 // Implementation of ArrayCheckedMul trait for PrimitiveArrays
 impl<T> ArrayCheckedMul<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedMul<Output = T> + Zero + NotI128,
+    T: NativeArithmetics + CheckedMul<Output = T>,
 {
-    type Output = Self;
-
-    fn checked_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn checked_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         checked_mul(self, rhs)
     }
 }
@@ -194,11 +188,9 @@ where
 // Implementation of ArraySaturatingMul trait for PrimitiveArrays
 impl<T> ArraySaturatingMul<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + SaturatingMul<Output = T> + NotI128,
+    T: NativeArithmetics + SaturatingMul<Output = T>,
 {
-    type Output = Self;
-
-    fn saturating_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn saturating_mul(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         saturating_mul(self, rhs)
     }
 }
@@ -206,11 +198,9 @@ where
 // Implementation of ArraySaturatingMul trait for PrimitiveArrays
 impl<T> ArrayOverflowingMul<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + OverflowingMul<Output = T> + NotI128,
+    T: NativeArithmetics + OverflowingMul<Output = T>,
 {
-    type Output = Self;
-
-    fn overflowing_mul(&self, rhs: &PrimitiveArray<T>) -> Result<(Self::Output, Bitmap)> {
+    fn overflowing_mul(&self, rhs: &PrimitiveArray<T>) -> Result<(Self, Bitmap)> {
         overflowing_mul(self, rhs)
     }
 }
@@ -271,7 +261,7 @@ where
 /// ```
 pub fn checked_mul_scalar<T>(lhs: &PrimitiveArray<T>, rhs: &T) -> PrimitiveArray<T>
 where
-    T: NativeType + CheckedMul<Output = T> + Zero,
+    T: NativeType + CheckedMul<Output = T>,
 {
     let rhs = *rhs;
     let op = move |a: T| a.checked_mul(&rhs);
@@ -331,11 +321,9 @@ where
 // Implementation of ArrayMul trait for PrimitiveArrays with a scalar
 impl<T> ArrayMul<T> for PrimitiveArray<T>
 where
-    T: NativeType + Mul<Output = T> + NotI128,
+    T: NativeType + Mul<Output = T> + NativeArithmetics,
 {
-    type Output = Self;
-
-    fn mul(&self, rhs: &T) -> Result<Self::Output> {
+    fn mul(&self, rhs: &T) -> Result<Self> {
         Ok(mul_scalar(self, rhs))
     }
 }
@@ -343,11 +331,9 @@ where
 // Implementation of ArrayCheckedMul trait for PrimitiveArrays with a scalar
 impl<T> ArrayCheckedMul<T> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedMul<Output = T> + Zero + NotI128,
+    T: NativeArithmetics + CheckedMul<Output = T>,
 {
-    type Output = Self;
-
-    fn checked_mul(&self, rhs: &T) -> Result<Self::Output> {
+    fn checked_mul(&self, rhs: &T) -> Result<Self> {
         Ok(checked_mul_scalar(self, rhs))
     }
 }
@@ -355,11 +341,9 @@ where
 // Implementation of ArraySaturatingMul trait for PrimitiveArrays with a scalar
 impl<T> ArraySaturatingMul<T> for PrimitiveArray<T>
 where
-    T: NativeType + SaturatingMul<Output = T> + NotI128,
+    T: NativeArithmetics + SaturatingMul<Output = T>,
 {
-    type Output = Self;
-
-    fn saturating_mul(&self, rhs: &T) -> Result<Self::Output> {
+    fn saturating_mul(&self, rhs: &T) -> Result<Self> {
         Ok(saturating_mul_scalar(self, rhs))
     }
 }
@@ -367,11 +351,9 @@ where
 // Implementation of ArraySaturatingMul trait for PrimitiveArrays with a scalar
 impl<T> ArrayOverflowingMul<T> for PrimitiveArray<T>
 where
-    T: NativeType + OverflowingMul<Output = T> + NotI128,
+    T: NativeArithmetics + OverflowingMul<Output = T>,
 {
-    type Output = Self;
-
-    fn overflowing_mul(&self, rhs: &T) -> Result<(Self::Output, Bitmap)> {
+    fn overflowing_mul(&self, rhs: &T) -> Result<(Self, Bitmap)> {
         Ok(overflowing_mul_scalar(self, rhs))
     }
 }

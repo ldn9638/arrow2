@@ -8,7 +8,7 @@ use crate::datatypes::DataType;
 use crate::{
     array::{Array, PrimitiveArray},
     compute::{
-        arithmetics::{ArrayCheckedDiv, ArrayDiv, NotI128},
+        arithmetics::{ArrayCheckedDiv, ArrayDiv, NativeArithmetics},
         arity::{binary, binary_checked, unary, unary_checked},
     },
     error::Result,
@@ -68,7 +68,7 @@ where
 /// ```
 pub fn checked_div<T>(lhs: &PrimitiveArray<T>, rhs: &PrimitiveArray<T>) -> Result<PrimitiveArray<T>>
 where
-    T: NativeType + CheckedDiv<Output = T> + Zero,
+    T: NativeArithmetics + CheckedDiv<Output = T>,
 {
     check_same_type(lhs, rhs)?;
 
@@ -80,11 +80,9 @@ where
 // Implementation of ArrayDiv trait for PrimitiveArrays
 impl<T> ArrayDiv<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + Div<Output = T> + NotI128,
+    T: NativeArithmetics + Div<Output = T>,
 {
-    type Output = Self;
-
-    fn div(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn div(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         div(self, rhs)
     }
 }
@@ -92,11 +90,9 @@ where
 // Implementation of ArrayCheckedDiv trait for PrimitiveArrays
 impl<T> ArrayCheckedDiv<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedDiv<Output = T> + Zero + NotI128,
+    T: NativeArithmetics + CheckedDiv<Output = T>,
 {
-    type Output = Self;
-
-    fn checked_div(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn checked_div(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         checked_div(self, rhs)
     }
 }
@@ -210,11 +206,9 @@ where
 // Implementation of ArrayDiv trait for PrimitiveArrays with a scalar
 impl<T> ArrayDiv<T> for PrimitiveArray<T>
 where
-    T: NativeType + Div<Output = T> + NotI128 + NumCast,
+    T: NativeType + Div<Output = T> + NativeArithmetics + NumCast,
 {
-    type Output = Self;
-
-    fn div(&self, rhs: &T) -> Result<Self::Output> {
+    fn div(&self, rhs: &T) -> Result<Self> {
         Ok(div_scalar(self, rhs))
     }
 }
@@ -222,11 +216,9 @@ where
 // Implementation of ArrayCheckedDiv trait for PrimitiveArrays with a scalar
 impl<T> ArrayCheckedDiv<T> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedDiv<Output = T> + Zero + NotI128,
+    T: NativeType + CheckedDiv<Output = T> + Zero + NativeArithmetics,
 {
-    type Output = Self;
-
-    fn checked_div(&self, rhs: &T) -> Result<Self::Output> {
+    fn checked_div(&self, rhs: &T) -> Result<Self> {
         Ok(checked_div_scalar(self, rhs))
     }
 }

@@ -20,7 +20,6 @@ pub struct BooleanArray {
     data_type: DataType,
     values: Bitmap,
     validity: Option<Bitmap>,
-    offset: usize,
 }
 
 impl BooleanArray {
@@ -50,7 +49,6 @@ impl BooleanArray {
             data_type,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -83,7 +81,6 @@ impl BooleanArray {
             data_type: self.data_type.clone(),
             values: self.values.clone().slice_unchecked(offset, length),
             validity,
-            offset: self.offset + offset,
         }
     }
 
@@ -102,6 +99,12 @@ impl BooleanArray {
 
 // accessors
 impl BooleanArray {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
     /// Returns the value at index `i`
     /// # Panic
     /// This function panics iff `i >= self.len()`.
@@ -139,7 +142,7 @@ impl Array for BooleanArray {
 
     #[inline]
     fn len(&self) -> usize {
-        self.values.len()
+        self.len()
     }
 
     #[inline]

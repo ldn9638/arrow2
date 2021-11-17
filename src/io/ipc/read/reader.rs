@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
@@ -30,8 +31,6 @@ use super::super::convert;
 use super::super::{ARROW_MAGIC, CONTINUATION_MARKER};
 use super::common::*;
 
-type ArrayRef = Arc<dyn Array>;
-
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
     /// The schema that is read from the file header
@@ -42,13 +41,8 @@ pub struct FileMetadata {
     /// A block indicates the regions in the file to read to get data
     blocks: Vec<ipc::File::Block>,
 
-    /// The total number of blocks, which may contain record batches and other types
-    total_blocks: usize,
-
-    /// Optional dictionaries for each schema field.
-    ///
-    /// Dictionaries may be appended to in the streaming format.
-    dictionaries_by_field: Vec<Option<ArrayRef>>,
+    /// Dictionaries associated to each dict_id
+    dictionaries: HashMap<usize, Arc<dyn Array>>,
 
     /// FileMetadata version
     version: ipc::Schema::MetadataVersion,
@@ -69,6 +63,28 @@ pub struct FileReader<R: Read + Seek> {
     metadata: FileMetadata,
     current_block: usize,
     projection: Option<(Vec<usize>, Arc<Schema>)>,
+    buffer: Vec<u8>,
+}
+
+fn read_dictionary_message<R: Read + Seek>(
+    reader: &mut R,
+    offset: u64,
+    data: &mut Vec<u8>,
+) -> Result<()> {
+    let mut message_size: [u8; 4] = [0; 4];
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.read_exact(&mut message_size)?;
+    if message_size == CONTINUATION_MARKER {
+        reader.read_exact(&mut message_size)?;
+    };
+    let footer_len = i32::from_le_bytes(message_size);
+
+    // prepare `data` to read the message
+    data.clear();
+    data.resize(footer_len as usize, 0);
+
+    reader.read_exact(data)?;
+    Ok(())
 }
 
 /// Read the IPC file's metadata
@@ -112,44 +128,40 @@ pub fn read_file_metadata<R: Read + Seek>(reader: &mut R) -> Result<FileMetadata
     let footer = ipc::File::root_as_footer_with_opts(&verifier_options, &footer_data[..])
         .map_err(|err| ArrowError::Ipc(format!("Unable to get root as footer: {:?}", err)))?;
 
-    let blocks = footer.recordBatches().ok_or_else(|| {
-        ArrowError::Ipc("Unable to get record batches from IPC Footer".to_string())
-    })?;
+    let blocks = footer
+        .recordBatches()
+        .ok_or_else(|| ArrowError::Ipc("Unable to get record batches from footer".to_string()))?;
 
-    let total_blocks = blocks.len();
-
-    let ipc_schema = footer.schema().unwrap();
+    let ipc_schema = footer
+        .schema()
+        .ok_or_else(|| ArrowError::Ipc("Unable to get the schema from footer".to_string()))?;
     let (schema, is_little_endian) = convert::fb_to_schema(ipc_schema);
     let schema = Arc::new(schema);
 
-    // Create an array of optional dictionary value arrays, one per field.
-    let mut dictionaries_by_field = vec![None; schema.fields().len()];
-    for block in footer.dictionaries().unwrap() {
-        // read length from end of offset
-        let mut message_size: [u8; 4] = [0; 4];
-        reader.seek(SeekFrom::Start(block.offset() as u64))?;
-        reader.read_exact(&mut message_size)?;
-        if message_size == CONTINUATION_MARKER {
-            reader.read_exact(&mut message_size)?;
-        };
-        let footer_len = i32::from_le_bytes(message_size);
+    let mut dictionaries = Default::default();
 
-        let mut block_data = vec![0; footer_len as usize];
+    let dictionary_blocks = footer
+        .dictionaries()
+        .ok_or_else(|| ArrowError::Ipc("Unable to get dictionaries from footer".to_string()))?;
 
-        reader.read_exact(&mut block_data)?;
+    let mut data = vec![];
+    for block in dictionary_blocks {
+        let offset = block.offset() as u64;
+        let length = block.metaDataLength() as u64;
+        read_dictionary_message(reader, offset, &mut data)?;
 
-        let message = ipc::Message::root_as_message(&block_data[..])
+        let message = ipc::Message::root_as_message(&data)
             .map_err(|err| ArrowError::Ipc(format!("Unable to get root as message: {:?}", err)))?;
 
         match message.header_type() {
             ipc::Message::MessageHeader::DictionaryBatch => {
-                let block_offset = block.offset() as u64 + block.metaDataLength() as u64;
+                let block_offset = offset + length;
                 let batch = message.header_as_dictionary_batch().unwrap();
                 read_dictionary(
                     batch,
                     &schema,
                     is_little_endian,
-                    &mut dictionaries_by_field,
+                    &mut dictionaries,
                     reader,
                     block_offset,
                 )?;
@@ -166,19 +178,38 @@ pub fn read_file_metadata<R: Read + Seek>(reader: &mut R) -> Result<FileMetadata
         schema,
         is_little_endian,
         blocks: blocks.to_vec(),
-        total_blocks,
-        dictionaries_by_field,
+        dictionaries,
         version: footer.version(),
     })
 }
 
-/// Read the IPC file's metadata
+fn get_serialized_batch<'a>(
+    message: &'a ipc::Message::Message,
+) -> Result<ipc::Message::RecordBatch<'a>> {
+    match message.header_type() {
+        ipc::Message::MessageHeader::Schema => Err(ArrowError::Ipc(
+            "Not expecting a schema when messages are read".to_string(),
+        )),
+        ipc::Message::MessageHeader::RecordBatch => {
+            message.header_as_record_batch().ok_or_else(|| {
+                ArrowError::Ipc("Unable to read IPC message as record batch".to_string())
+            })
+        }
+        t => Err(ArrowError::Ipc(format!(
+            "Reading types other than record batches not yet supported, unable to read {:?}",
+            t
+        ))),
+    }
+}
+
+/// Read a batch from the reader.
 pub fn read_batch<R: Read + Seek>(
     reader: &mut R,
     metadata: &FileMetadata,
     projection: Option<(&[usize], Arc<Schema>)>,
     block: usize,
-) -> Result<Option<RecordBatch>> {
+    block_data: &mut Vec<u8>,
+) -> Result<RecordBatch> {
     let block = metadata.blocks[block];
 
     // read length
@@ -189,10 +220,11 @@ pub fn read_batch<R: Read + Seek>(
         // continuation marker encountered, read message next
         reader.read_exact(&mut meta_buf)?;
     }
-    let meta_len = i32::from_le_bytes(meta_buf);
+    let meta_len = i32::from_le_bytes(meta_buf) as usize;
 
-    let mut block_data = vec![0; meta_len as usize];
-    reader.read_exact(&mut block_data)?;
+    block_data.clear();
+    block_data.resize(meta_len, 0);
+    reader.read_exact(block_data)?;
 
     let message = ipc::Message::root_as_message(&block_data[..])
         .map_err(|err| ArrowError::Ipc(format!("Unable to get root as footer: {:?}", err)))?;
@@ -205,32 +237,18 @@ pub fn read_batch<R: Read + Seek>(
         ));
     }
 
-    match message.header_type() {
-        ipc::Message::MessageHeader::Schema => Err(ArrowError::Ipc(
-            "Not expecting a schema when messages are read".to_string(),
-        )),
-        ipc::Message::MessageHeader::RecordBatch => {
-            let batch = message.header_as_record_batch().ok_or_else(|| {
-                ArrowError::Ipc("Unable to read IPC message as record batch".to_string())
-            })?;
-            read_record_batch(
-                batch,
-                metadata.schema.clone(),
-                projection,
-                metadata.is_little_endian,
-                &metadata.dictionaries_by_field,
-                metadata.version,
-                reader,
-                block.offset() as u64 + block.metaDataLength() as u64,
-            )
-            .map(Some)
-        }
-        ipc::Message::MessageHeader::NONE => Ok(None),
-        t => Err(ArrowError::Ipc(format!(
-            "Reading types other than record batches not yet supported, unable to read {:?}",
-            t
-        ))),
-    }
+    let batch = get_serialized_batch(&message)?;
+
+    read_record_batch(
+        batch,
+        metadata.schema.clone(),
+        projection,
+        metadata.is_little_endian,
+        &metadata.dictionaries,
+        metadata.version,
+        reader,
+        block.offset() as u64 + block.metaDataLength() as u64,
+    )
 }
 
 impl<R: Read + Seek> FileReader<R> {
@@ -239,13 +257,11 @@ impl<R: Read + Seek> FileReader<R> {
     /// Panics iff the projection is not in increasing order (e.g. `[1, 0]` nor `[0, 1, 1]` are valid)
     pub fn new(reader: R, metadata: FileMetadata, projection: Option<Vec<usize>>) -> Self {
         if let Some(projection) = projection.as_ref() {
-            let _ = projection.iter().fold(0, |mut acc, v| {
+            projection.windows(2).for_each(|x| {
                 assert!(
-                    *v > acc,
+                    x[0] < x[1],
                     "The projection on IPC must be ordered and non-overlapping"
                 );
-                acc = *v;
-                acc
             });
         }
         let projection = projection.map(|projection| {
@@ -262,6 +278,7 @@ impl<R: Read + Seek> FileReader<R> {
             metadata,
             projection,
             current_block: 0,
+            buffer: vec![],
         }
     }
 
@@ -284,18 +301,18 @@ impl<R: Read + Seek> Iterator for FileReader<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // get current block
-        if self.current_block < self.metadata.total_blocks {
+        if self.current_block < self.metadata.blocks.len() {
             let block = self.current_block;
             self.current_block += 1;
-            read_batch(
+            Some(read_batch(
                 &mut self.reader,
                 &self.metadata,
                 self.projection
                     .as_ref()
                     .map(|x| (x.0.as_ref(), x.1.clone())),
                 block,
-            )
-            .transpose()
+                &mut self.buffer,
+            ))
         } else {
             None
         }

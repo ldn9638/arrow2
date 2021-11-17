@@ -1,7 +1,8 @@
 use crate::{bitmap::Bitmap, buffer::Buffer, datatypes::DataType, error::Result};
 
-use super::{display_fmt, display_helper, ffi::ToFfi, Array};
+use super::{display_fmt, Array};
 
+mod ffi;
 mod iterator;
 mod mutable;
 pub use mutable::*;
@@ -14,7 +15,6 @@ pub struct FixedSizeBinaryArray {
     data_type: DataType,
     values: Buffer<u8>,
     validity: Option<Bitmap>,
-    offset: usize,
 }
 
 impl FixedSizeBinaryArray {
@@ -47,7 +47,6 @@ impl FixedSizeBinaryArray {
             data_type,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -83,8 +82,28 @@ impl FixedSizeBinaryArray {
             size: self.size,
             values,
             validity,
-            offset: self.offset + offset,
         }
+    }
+
+    /// Sets the validity bitmap on this [`FixedSizeBinaryArray`].
+    /// # Panic
+    /// This function panics iff `validity.len() != self.len()`.
+    pub fn with_validity(&self, validity: Option<Bitmap>) -> Self {
+        if matches!(&validity, Some(bitmap) if bitmap.len() != self.len()) {
+            panic!("validity should be as least as large as the array")
+        }
+        let mut arr = self.clone();
+        arr.validity = validity;
+        arr
+    }
+}
+
+// accessors
+impl FixedSizeBinaryArray {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.values.len() / self.size as usize
     }
 
     /// The optional validity.
@@ -103,7 +122,8 @@ impl FixedSizeBinaryArray {
     /// Panics iff `i >= self.len()`.
     #[inline]
     pub fn value(&self, i: usize) -> &[u8] {
-        &self.values()[i * self.size as usize..(i + 1) * self.size as usize]
+        assert!(i < self.len());
+        unsafe { self.value_unchecked(i) }
     }
 
     /// Returns the element at index `i` as &str
@@ -119,18 +139,6 @@ impl FixedSizeBinaryArray {
     /// Returns the size
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// Sets the validity bitmap on this [`FixedSizeBinaryArray`].
-    /// # Panic
-    /// This function panics iff `validity.len() != self.len()`.
-    pub fn with_validity(&self, validity: Option<Bitmap>) -> Self {
-        if matches!(&validity, Some(bitmap) if bitmap.len() != self.len()) {
-            panic!("validity should be as least as large as the array")
-        }
-        let mut arr = self.clone();
-        arr.validity = validity;
-        arr
     }
 }
 
@@ -151,7 +159,7 @@ impl Array for FixedSizeBinaryArray {
 
     #[inline]
     fn len(&self) -> usize {
-        self.values.len() / self.size as usize
+        self.len()
     }
 
     #[inline]
@@ -176,22 +184,8 @@ impl Array for FixedSizeBinaryArray {
 
 impl std::fmt::Display for FixedSizeBinaryArray {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let a = |x: &[u8]| display_helper(x.iter().map(|x| Some(format!("{:b}", x)))).join(" ");
-        let iter = self.iter().map(|x| x.map(a));
+        let iter = self.iter().map(|x| x.map(|x| format!("{:?}", x)));
         display_fmt(iter, "FixedSizeBinaryArray", f, false)
-    }
-}
-
-unsafe impl ToFfi for FixedSizeBinaryArray {
-    fn buffers(&self) -> Vec<Option<std::ptr::NonNull<u8>>> {
-        vec![
-            self.validity.as_ref().map(|x| x.as_ptr()),
-            std::ptr::NonNull::new(self.values.as_ptr() as *mut u8),
-        ]
-    }
-
-    fn offset(&self) -> usize {
-        self.offset
     }
 }
 

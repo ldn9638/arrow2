@@ -1,106 +1,191 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-//! Common utilities used to write to Arrow's IPC format.
-
-use std::io::Write;
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_format::ipc;
 use arrow_format::ipc::flatbuffers::FlatBufferBuilder;
+use arrow_format::ipc::Message::CompressionType;
 
-use crate::array::Array;
+use crate::array::*;
+use crate::datatypes::*;
 use crate::error::{ArrowError, Result};
 use crate::io::ipc::endianess::is_native_little_endian;
 use crate::record_batch::RecordBatch;
-use crate::{array::DictionaryArray, datatypes::*};
 
-use super::super::CONTINUATION_MARKER;
 use super::{write, write_dictionary};
 
-/// IPC write options used to control the behaviour of the writer
-#[derive(Debug)]
-pub struct IpcWriteOptions {
-    /// Write padding after memory buffers to this multiple of bytes.
-    /// Generally 8 or 64, defaults to 8
-    alignment: usize,
-    /// The legacy format is for releases before 0.15.0, and uses metadata V4
-    write_legacy_ipc_format: bool,
-    /// The metadata version to write. The Rust IPC writer supports V4+
-    ///
-    /// *Default versions per crate*
-    ///
-    /// When creating the default IpcWriteOptions, the following metadata versions are used:
-    ///
-    /// version 2.0.0: V4, with legacy format enabled
-    /// version 4.0.0: V5
-    metadata_version: ipc::Schema::MetadataVersion,
+/// Compression codec
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Compression {
+    /// LZ4 (framed)
+    LZ4,
+    /// ZSTD
+    ZSTD,
 }
 
-impl IpcWriteOptions {
-    /// Try create IpcWriteOptions, checking for incompatible settings
-    pub fn try_new(
-        alignment: usize,
-        write_legacy_ipc_format: bool,
-        metadata_version: ipc::Schema::MetadataVersion,
-    ) -> Result<Self> {
-        if alignment == 0 || alignment % 8 != 0 {
-            return Err(ArrowError::InvalidArgumentError(
-                "Alignment should be greater than 0 and be a multiple of 8".to_string(),
-            ));
-        }
-        match metadata_version {
-            ipc::Schema::MetadataVersion::V1
-            | ipc::Schema::MetadataVersion::V2
-            | ipc::Schema::MetadataVersion::V3 => Err(ArrowError::InvalidArgumentError(
-                "Writing IPC metadata version 3 and lower not supported".to_string(),
-            )),
-            ipc::Schema::MetadataVersion::V4 => Ok(Self {
-                alignment,
-                write_legacy_ipc_format,
-                metadata_version,
-            }),
-            ipc::Schema::MetadataVersion::V5 => {
-                if write_legacy_ipc_format {
-                    Err(ArrowError::InvalidArgumentError(
-                        "Legacy IPC format only supported on metadata version 4".to_string(),
-                    ))
-                } else {
-                    Ok(Self {
-                        alignment,
-                        write_legacy_ipc_format,
-                        metadata_version,
-                    })
-                }
-            }
-            z => panic!("Unsupported ipc::Schema::MetadataVersion {:?}", z),
-        }
-    }
-
-    pub fn metadata_version(&self) -> &ipc::Schema::MetadataVersion {
-        &self.metadata_version
-    }
+/// Options declaring the behaviour of writing to IPC
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct WriteOptions {
+    /// Whether the buffers should be compressed and which codec to use.
+    /// Note: to use compression the crate must be compiled with feature `io_ipc_compression`.
+    pub compression: Option<Compression>,
 }
 
-impl Default for IpcWriteOptions {
-    fn default() -> Self {
-        Self {
-            alignment: 8,
-            write_legacy_ipc_format: false,
-            metadata_version: ipc::Schema::MetadataVersion::V5,
+fn encode_dictionary(
+    field: &Field,
+    array: &Arc<dyn Array>,
+    options: &WriteOptions,
+    dictionary_tracker: &mut DictionaryTracker,
+    encoded_dictionaries: &mut Vec<EncodedData>,
+) -> Result<()> {
+    use PhysicalType::*;
+    match array.data_type().to_physical_type() {
+        Utf8 | LargeUtf8 | Binary | LargeBinary | Primitive(_) | Boolean | Null
+        | FixedSizeBinary => Ok(()),
+        Dictionary(key_type) => match_integer_type!(key_type, |$T| {
+            let dict_id = field
+                .dict_id()
+                .expect("All Dictionary types have `dict_id`");
+
+            let values = array.as_any().downcast_ref::<DictionaryArray<$T>>().unwrap().values();
+            // todo: this is won't work for Dict<Dict<...>>;
+            let field = Field::new("item", values.data_type().clone(), true);
+            encode_dictionary(&field,
+                values,
+                options,
+                dictionary_tracker,
+                encoded_dictionaries
+            )?;
+
+            let emit = dictionary_tracker.insert(dict_id, array)?;
+
+            if emit {
+                encoded_dictionaries.push(dictionary_batch_to_bytes(
+                    dict_id,
+                    array.as_ref(),
+                    options,
+                    is_native_little_endian(),
+                ));
+            };
+            Ok(())
+        }),
+        Struct => {
+            let values = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .values();
+            let fields = if let DataType::Struct(fields) = array.data_type() {
+                fields
+            } else {
+                unreachable!()
+            };
+            fields
+                .iter()
+                .zip(values.iter())
+                .try_for_each(|(field, values)| {
+                    encode_dictionary(
+                        field,
+                        values,
+                        options,
+                        dictionary_tracker,
+                        encoded_dictionaries,
+                    )
+                })
+        }
+        List => {
+            let values = array
+                .as_any()
+                .downcast_ref::<ListArray<i32>>()
+                .unwrap()
+                .values();
+            let field = if let DataType::List(field) = field.data_type() {
+                field.as_ref()
+            } else {
+                unreachable!()
+            };
+            encode_dictionary(
+                field,
+                values,
+                options,
+                dictionary_tracker,
+                encoded_dictionaries,
+            )
+        }
+        LargeList => {
+            let values = array
+                .as_any()
+                .downcast_ref::<ListArray<i64>>()
+                .unwrap()
+                .values();
+            let field = if let DataType::LargeList(field) = field.data_type() {
+                field.as_ref()
+            } else {
+                unreachable!()
+            };
+            encode_dictionary(
+                field,
+                values,
+                options,
+                dictionary_tracker,
+                encoded_dictionaries,
+            )
+        }
+        FixedSizeList => {
+            let values = array
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap()
+                .values();
+            let field = if let DataType::FixedSizeList(field, _) = field.data_type() {
+                field.as_ref()
+            } else {
+                unreachable!()
+            };
+            encode_dictionary(
+                field,
+                values,
+                options,
+                dictionary_tracker,
+                encoded_dictionaries,
+            )
+        }
+        Union => {
+            let values = array
+                .as_any()
+                .downcast_ref::<UnionArray>()
+                .unwrap()
+                .fields();
+            let fields = if let DataType::Union(fields, _, _) = field.data_type() {
+                fields
+            } else {
+                unreachable!()
+            };
+            fields
+                .iter()
+                .zip(values.iter())
+                .try_for_each(|(field, values)| {
+                    encode_dictionary(
+                        field,
+                        values,
+                        options,
+                        dictionary_tracker,
+                        encoded_dictionaries,
+                    )
+                })
+        }
+        Map => {
+            let values = array.as_any().downcast_ref::<MapArray>().unwrap().field();
+            let field = if let DataType::Map(field, _) = field.data_type() {
+                field.as_ref()
+            } else {
+                unreachable!()
+            };
+            encode_dictionary(
+                field,
+                values,
+                options,
+                dictionary_tracker,
+                encoded_dictionaries,
+            )
         }
     }
 }
@@ -108,41 +193,29 @@ impl Default for IpcWriteOptions {
 pub fn encoded_batch(
     batch: &RecordBatch,
     dictionary_tracker: &mut DictionaryTracker,
-    write_options: &IpcWriteOptions,
+    options: &WriteOptions,
 ) -> Result<(Vec<EncodedData>, EncodedData)> {
-    // TODO: handle nested dictionaries
     let schema = batch.schema();
     let mut encoded_dictionaries = Vec::with_capacity(schema.fields().len());
 
-    for (i, field) in schema.fields().iter().enumerate() {
-        let column = batch.column(i);
-
-        if let DataType::Dictionary(_key_type, _value_type) = column.data_type() {
-            let dict_id = field
-                .dict_id()
-                .expect("All Dictionary types have `dict_id`");
-
-            let emit = dictionary_tracker.insert(dict_id, column)?;
-
-            if emit {
-                encoded_dictionaries.push(dictionary_batch_to_bytes(
-                    dict_id,
-                    column.as_ref(),
-                    write_options,
-                    is_native_little_endian(),
-                ));
-            }
-        }
+    for (field, column) in schema.fields().iter().zip(batch.columns()) {
+        encode_dictionary(
+            field,
+            column,
+            options,
+            dictionary_tracker,
+            &mut encoded_dictionaries,
+        )?;
     }
 
-    let encoded_message = record_batch_to_bytes(batch, write_options);
+    let encoded_message = record_batch_to_bytes(batch, options);
 
     Ok((encoded_dictionaries, encoded_message))
 }
 
 /// Write a `RecordBatch` into two sets of bytes, one for the header (ipc::Schema::Message) and the
 /// other for the batch's data
-fn record_batch_to_bytes(batch: &RecordBatch, write_options: &IpcWriteOptions) -> EncodedData {
+fn record_batch_to_bytes(batch: &RecordBatch, options: &WriteOptions) -> EncodedData {
     let mut fbb = FlatBufferBuilder::new();
 
     let mut nodes: Vec<ipc::Message::FieldNode> = vec![];
@@ -157,6 +230,7 @@ fn record_batch_to_bytes(batch: &RecordBatch, write_options: &IpcWriteOptions) -
             &mut nodes,
             &mut offset,
             is_native_little_endian(),
+            options.compression,
         )
     }
 
@@ -164,17 +238,32 @@ fn record_batch_to_bytes(batch: &RecordBatch, write_options: &IpcWriteOptions) -
     let buffers = fbb.create_vector(&buffers);
     let nodes = fbb.create_vector(&nodes);
 
+    let compression = if let Some(compression) = options.compression {
+        let compression = match compression {
+            Compression::LZ4 => CompressionType::LZ4_FRAME,
+            Compression::ZSTD => CompressionType::ZSTD,
+        };
+        let mut compression_builder = ipc::Message::BodyCompressionBuilder::new(&mut fbb);
+        compression_builder.add_codec(compression);
+        Some(compression_builder.finish())
+    } else {
+        None
+    };
+
     let root = {
         let mut batch_builder = ipc::Message::RecordBatchBuilder::new(&mut fbb);
         batch_builder.add_length(batch.num_rows() as i64);
         batch_builder.add_nodes(nodes);
         batch_builder.add_buffers(buffers);
+        if let Some(compression) = compression {
+            batch_builder.add_compression(compression)
+        }
         let b = batch_builder.finish();
         b.as_union_value()
     };
     // create an ipc::Schema::Message
     let mut message = ipc::Message::MessageBuilder::new(&mut fbb);
-    message.add_version(write_options.metadata_version);
+    message.add_version(ipc::Schema::MetadataVersion::V5);
     message.add_header_type(ipc::Message::MessageHeader::RecordBatch);
     message.add_bodyLength(arrow_data.len() as i64);
     message.add_header(root);
@@ -193,7 +282,7 @@ fn record_batch_to_bytes(batch: &RecordBatch, write_options: &IpcWriteOptions) -
 fn dictionary_batch_to_bytes(
     dict_id: i64,
     array: &dyn Array,
-    write_options: &IpcWriteOptions,
+    options: &WriteOptions,
     is_little_endian: bool,
 ) -> EncodedData {
     let mut fbb = FlatBufferBuilder::new();
@@ -209,6 +298,7 @@ fn dictionary_batch_to_bytes(
         &mut nodes,
         &mut 0,
         is_little_endian,
+        options.compression,
         false,
     );
 
@@ -216,11 +306,26 @@ fn dictionary_batch_to_bytes(
     let buffers = fbb.create_vector(&buffers);
     let nodes = fbb.create_vector(&nodes);
 
+    let compression = if let Some(compression) = options.compression {
+        let compression = match compression {
+            Compression::LZ4 => CompressionType::LZ4_FRAME,
+            Compression::ZSTD => CompressionType::ZSTD,
+        };
+        let mut compression_builder = ipc::Message::BodyCompressionBuilder::new(&mut fbb);
+        compression_builder.add_codec(compression);
+        Some(compression_builder.finish())
+    } else {
+        None
+    };
+
     let root = {
         let mut batch_builder = ipc::Message::RecordBatchBuilder::new(&mut fbb);
         batch_builder.add_length(length as i64);
         batch_builder.add_nodes(nodes);
         batch_builder.add_buffers(buffers);
+        if let Some(compression) = compression {
+            batch_builder.add_compression(compression)
+        }
         batch_builder.finish()
     };
 
@@ -233,7 +338,7 @@ fn dictionary_batch_to_bytes(
 
     let root = {
         let mut message_builder = ipc::Message::MessageBuilder::new(&mut fbb);
-        message_builder.add_version(write_options.metadata_version);
+        message_builder.add_version(ipc::Schema::MetadataVersion::V5);
         message_builder.add_header_type(ipc::Message::MessageHeader::DictionaryBatch);
         message_builder.add_bodyLength(arrow_data.len() as i64);
         message_builder.add_header(root);
@@ -277,7 +382,7 @@ impl DictionaryTracker {
     pub fn insert(&mut self, dict_id: i64, array: &Arc<dyn Array>) -> Result<bool> {
         let values = match array.data_type() {
             DataType::Dictionary(key_type, _) => {
-                with_match_dictionary_key_type!(key_type.as_ref(), |$T| {
+                match_integer_type!(key_type, |$T| {
                     let array = array
                         .as_any()
                         .downcast_ref::<DictionaryArray<$T>>()
@@ -316,101 +421,8 @@ pub struct EncodedData {
     pub arrow_data: Vec<u8>,
 }
 
-/// Write a message's IPC data and buffers, returning metadata and buffer data lengths written
-pub fn write_message<W: Write>(
-    writer: &mut W,
-    encoded: EncodedData,
-    write_options: &IpcWriteOptions,
-) -> Result<(usize, usize)> {
-    let arrow_data_len = encoded.arrow_data.len();
-    if arrow_data_len % 8 != 0 {
-        return Err(ArrowError::Ipc("Arrow data not aligned".to_string()));
-    }
-
-    let a = write_options.alignment - 1;
-    let buffer = encoded.ipc_message;
-    let flatbuf_size = buffer.len();
-    let prefix_size = if write_options.write_legacy_ipc_format {
-        4
-    } else {
-        8
-    };
-    let aligned_size = (flatbuf_size + prefix_size + a) & !a;
-    let padding_bytes = aligned_size - flatbuf_size - prefix_size;
-
-    write_continuation(writer, write_options, (aligned_size - prefix_size) as i32)?;
-
-    // write the flatbuf
-    if flatbuf_size > 0 {
-        writer.write_all(&buffer)?;
-    }
-    // write padding
-    writer.write_all(&vec![0; padding_bytes])?;
-
-    // write arrow data
-    let body_len = if arrow_data_len > 0 {
-        write_body_buffers(writer, &encoded.arrow_data)?
-    } else {
-        0
-    };
-
-    Ok((aligned_size, body_len))
-}
-
-fn write_body_buffers<W: Write>(mut writer: W, data: &[u8]) -> Result<usize> {
-    let len = data.len() as u32;
-    let pad_len = pad_to_8(len) as u32;
-    let total_len = len + pad_len;
-
-    // write body buffer
-    writer.write_all(data)?;
-    if pad_len > 0 {
-        writer.write_all(&vec![0u8; pad_len as usize][..])?;
-    }
-
-    writer.flush()?;
-    Ok(total_len as usize)
-}
-
-/// Write a record batch to the writer, writing the message size before the message
-/// if the record batch is being written to a stream
-pub fn write_continuation<W: Write>(
-    writer: &mut W,
-    write_options: &IpcWriteOptions,
-    total_len: i32,
-) -> Result<usize> {
-    let mut written = 8;
-
-    // the version of the writer determines whether continuation markers should be added
-    match write_options.metadata_version {
-        ipc::Schema::MetadataVersion::V1
-        | ipc::Schema::MetadataVersion::V2
-        | ipc::Schema::MetadataVersion::V3 => {
-            unreachable!("Options with the metadata version cannot be created")
-        }
-        ipc::Schema::MetadataVersion::V4 => {
-            if !write_options.write_legacy_ipc_format {
-                // v0.15.0 format
-                writer.write_all(&CONTINUATION_MARKER)?;
-                written = 4;
-            }
-            writer.write_all(&total_len.to_le_bytes()[..])?;
-        }
-        ipc::Schema::MetadataVersion::V5 => {
-            // write continuation marker and message length
-            writer.write_all(&CONTINUATION_MARKER)?;
-            writer.write_all(&total_len.to_le_bytes()[..])?;
-        }
-        z => panic!("Unsupported ipc::Schema::MetadataVersion {:?}", z),
-    };
-
-    writer.flush()?;
-
-    Ok(written)
-}
-
 /// Calculate an 8-byte boundary and return the number of bytes needed to pad to 8 bytes
 #[inline]
-pub(crate) fn pad_to_8(len: u32) -> usize {
+pub(crate) fn pad_to_8(len: usize) -> usize {
     (((len + 7) & !7) - len) as usize
 }

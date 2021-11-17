@@ -36,7 +36,6 @@ pub struct Utf8Array<O: Offset> {
     offsets: Buffer<O>,
     values: Buffer<u8>,
     validity: Option<Bitmap>,
-    offset: usize,
 }
 
 impl<O: Offset> Utf8Array<O> {
@@ -86,7 +85,6 @@ impl<O: Offset> Utf8Array<O> {
             offsets,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -128,7 +126,6 @@ impl<O: Offset> Utf8Array<O> {
             offsets,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -161,7 +158,6 @@ impl<O: Offset> Utf8Array<O> {
             offsets,
             values: self.values.clone(),
             validity,
-            offset: self.offset + offset,
         }
     }
 
@@ -180,6 +176,12 @@ impl<O: Offset> Utf8Array<O> {
 
 // Accessors
 impl<O: Offset> Utf8Array<O> {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
     /// Returns the element at index `i` as &str
     /// # Safety
     /// This function is safe iff `i < self.len`.
@@ -234,7 +236,7 @@ impl<O: Offset> Array for Utf8Array<O> {
 
     #[inline]
     fn len(&self) -> usize {
-        self.offsets.len() - 1
+        self.len()
     }
 
     #[inline]

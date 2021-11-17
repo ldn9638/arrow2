@@ -1,9 +1,4 @@
-//! Arrow IPC File and Stream Readers
-//!
-//! The `FileReader` and `StreamReader` have similar interfaces,
-//! however the `FileReader` expects a reader that supports `Seek`ing
-
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::{
     io::{Read, Seek},
     sync::Arc,
@@ -13,25 +8,28 @@ use arrow_format::ipc;
 use arrow_format::ipc::{Message::BodyCompression, Schema::MetadataVersion};
 
 use crate::array::*;
-use crate::datatypes::{DataType, PhysicalType};
+use crate::datatypes::{DataType, Field, PhysicalType};
 use crate::error::Result;
 
 use super::array::*;
 
-pub type Node<'a> = (&'a ipc::Message::FieldNode, &'a Option<Arc<dyn Array>>);
+pub type Node<'a> = &'a ipc::Message::FieldNode;
 
 #[allow(clippy::too_many_arguments)]
 pub fn read<R: Read + Seek>(
     field_nodes: &mut VecDeque<Node>,
-    data_type: DataType,
+    field: &Field,
     buffers: &mut VecDeque<&ipc::Schema::Buffer>,
     reader: &mut R,
+    dictionaries: &HashMap<usize, Arc<dyn Array>>,
     block_offset: u64,
     is_little_endian: bool,
     compression: Option<BodyCompression>,
     version: MetadataVersion,
 ) -> Result<Arc<dyn Array>> {
     use PhysicalType::*;
+    let data_type = field.data_type().clone();
+
     match data_type.to_physical_type() {
         Null => {
             let array = read_null(field_nodes, data_type);
@@ -44,6 +42,7 @@ pub fn read<R: Read + Seek>(
             reader,
             block_offset,
             is_little_endian,
+            compression,
         )
         .map(|x| Arc::new(x) as Arc<dyn Array>),
         Primitive(primitive) => with_match_primitive_type!(primitive, |$T| {
@@ -123,6 +122,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,
@@ -134,6 +134,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,
@@ -145,6 +146,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,
@@ -156,6 +158,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,
@@ -163,12 +166,15 @@ pub fn read<R: Read + Seek>(
         )
         .map(|x| Arc::new(x) as Arc<dyn Array>),
         Dictionary(key_type) => {
-            with_match_physical_dictionary_key_type!(key_type, |$T| {
+            match_integer_type!(key_type, |$T| {
                 read_dictionary::<$T, _>(
                     field_nodes,
+                    field,
                     buffers,
                     reader,
+                    dictionaries,
                     block_offset,
+                    compression,
                     is_little_endian,
                 )
                 .map(|x| Arc::new(x) as Arc<dyn Array>)
@@ -179,6 +185,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,
@@ -190,6 +197,7 @@ pub fn read<R: Read + Seek>(
             data_type,
             buffers,
             reader,
+            dictionaries,
             block_offset,
             is_little_endian,
             compression,

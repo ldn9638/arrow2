@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     bitmap::Bitmap,
-    datatypes::DataType,
+    datatypes::{DataType, IntegerType},
     scalar::{new_scalar, Scalar},
-    types::{NativeType, NaturalDataType},
+    types::NativeType,
 };
 
 mod ffi;
@@ -13,22 +13,40 @@ mod mutable;
 pub use iterator::*;
 pub use mutable::*;
 
-use super::{new_empty_array, primitive::PrimitiveArray, Array};
+use super::display::get_value_display;
+use super::{display_fmt, new_empty_array, primitive::PrimitiveArray, Array};
+use crate::scalar::NullScalar;
 
 /// Trait denoting [`NativeType`]s that can be used as keys of a dictionary.
-pub trait DictionaryKey:
-    NativeType + NaturalDataType + num_traits::NumCast + num_traits::FromPrimitive
-{
+pub trait DictionaryKey: NativeType + num_traits::NumCast + num_traits::FromPrimitive {
+    /// The corresponding [`IntegerType`] of this key
+    const KEY_TYPE: IntegerType;
 }
 
-impl DictionaryKey for i8 {}
-impl DictionaryKey for i16 {}
-impl DictionaryKey for i32 {}
-impl DictionaryKey for i64 {}
-impl DictionaryKey for u8 {}
-impl DictionaryKey for u16 {}
-impl DictionaryKey for u32 {}
-impl DictionaryKey for u64 {}
+impl DictionaryKey for i8 {
+    const KEY_TYPE: IntegerType = IntegerType::Int8;
+}
+impl DictionaryKey for i16 {
+    const KEY_TYPE: IntegerType = IntegerType::Int16;
+}
+impl DictionaryKey for i32 {
+    const KEY_TYPE: IntegerType = IntegerType::Int32;
+}
+impl DictionaryKey for i64 {
+    const KEY_TYPE: IntegerType = IntegerType::Int64;
+}
+impl DictionaryKey for u8 {
+    const KEY_TYPE: IntegerType = IntegerType::UInt8;
+}
+impl DictionaryKey for u16 {
+    const KEY_TYPE: IntegerType = IntegerType::UInt16;
+}
+impl DictionaryKey for u32 {
+    const KEY_TYPE: IntegerType = IntegerType::UInt32;
+}
+impl DictionaryKey for u64 {
+    const KEY_TYPE: IntegerType = IntegerType::UInt64;
+}
 
 /// An [`Array`] whose values are encoded by keys. This [`Array`] is useful when the cardinality of
 /// values is low compared to the length of the [`Array`].
@@ -37,7 +55,6 @@ pub struct DictionaryArray<K: DictionaryKey> {
     data_type: DataType,
     keys: PrimitiveArray<K>,
     values: Arc<dyn Array>,
-    offset: usize,
 }
 
 impl<K: DictionaryKey> DictionaryArray<K> {
@@ -60,16 +77,12 @@ impl<K: DictionaryKey> DictionaryArray<K> {
 
     /// The canonical method to create a new [`DictionaryArray`].
     pub fn from_data(keys: PrimitiveArray<K>, values: Arc<dyn Array>) -> Self {
-        let data_type = DataType::Dictionary(
-            Box::new(keys.data_type().clone()),
-            Box::new(values.data_type().clone()),
-        );
+        let data_type = DataType::Dictionary(K::KEY_TYPE, Box::new(values.data_type().clone()));
 
         Self {
             data_type,
             keys,
             values,
-            offset: 0,
         }
     }
 
@@ -81,7 +94,6 @@ impl<K: DictionaryKey> DictionaryArray<K> {
             data_type: self.data_type.clone(),
             keys: self.keys.clone().slice(offset, length),
             values: self.values.clone(),
-            offset: self.offset + offset,
         }
     }
 
@@ -93,7 +105,6 @@ impl<K: DictionaryKey> DictionaryArray<K> {
             data_type: self.data_type.clone(),
             keys: self.keys.clone().slice_unchecked(offset, length),
             values: self.values.clone(),
-            offset: self.offset + offset,
         }
     }
 
@@ -107,6 +118,15 @@ impl<K: DictionaryKey> DictionaryArray<K> {
         let mut arr = self.clone();
         arr.values = Arc::from(arr.values.with_validity(validity));
         arr
+    }
+}
+
+// accessors
+impl<K: DictionaryKey> DictionaryArray<K> {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.keys.len()
     }
 
     /// The optional validity. Equivalent to `self.keys().validity()`.
@@ -131,8 +151,12 @@ impl<K: DictionaryKey> DictionaryArray<K> {
     /// Returns the value of the [`DictionaryArray`] at position `i`.
     #[inline]
     pub fn value(&self, index: usize) -> Box<dyn Scalar> {
-        let index = self.keys.value(index).to_usize().unwrap();
-        new_scalar(self.values.as_ref(), index)
+        if self.keys.is_null(index) {
+            Box::new(NullScalar::new())
+        } else {
+            let index = self.keys.value(index).to_usize().unwrap();
+            new_scalar(self.values.as_ref(), index)
+        }
     }
 }
 
@@ -154,7 +178,7 @@ impl<K: DictionaryKey> Array for DictionaryArray<K> {
 
     #[inline]
     fn len(&self) -> usize {
-        self.keys.len()
+        self.len()
     }
 
     #[inline]
@@ -182,9 +206,10 @@ where
     PrimitiveArray<K>: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{:?}{{", self.data_type())?;
-        writeln!(f, "keys: {},", self.keys())?;
-        writeln!(f, "values: {},", self.values())?;
-        write!(f, "}}")
+        let display = get_value_display(self);
+        let new_lines = false;
+        let head = &format!("{}", self.data_type());
+        let iter = self.iter().enumerate().map(|(i, x)| x.map(|_| display(i)));
+        display_fmt(iter, head, f, new_lines)
     }
 }

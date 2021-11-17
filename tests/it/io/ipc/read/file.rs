@@ -135,6 +135,12 @@ fn read_generated_100_non_canonical_map() -> Result<()> {
 }
 
 #[test]
+fn read_generated_100_nested_dictionary() -> Result<()> {
+    test_file("1.0.0-littleendian", "generated_nested_dictionary")?;
+    test_file("1.0.0-bigendian", "generated_nested_dictionary")
+}
+
+#[test]
 fn read_generated_017_union() -> Result<()> {
     test_file("0.17.1", "generated_union")
 }
@@ -172,5 +178,5 @@ fn test_projection(version: &str, file_name: &str, column: usize) -> Result<()> 
 fn read_projected() -> Result<()> {
     test_projection("1.0.0-littleendian", "generated_primitive", 1)?;
     test_projection("1.0.0-littleendian", "generated_dictionary", 2)?;
-    test_projection("1.0.0-littleendian", "generated_nested", 1)
+    test_projection("1.0.0-littleendian", "generated_nested", 0)
 }

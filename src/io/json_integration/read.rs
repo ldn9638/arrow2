@@ -357,14 +357,21 @@ pub fn to_array(
             let values = fields
                 .iter()
                 .zip(json_col.children.as_ref().unwrap())
-                .map(|(field, col)| to_array(field.data_type().clone(), None, col, dictionaries))
+                .map(|(field, col)| {
+                    to_array(
+                        field.data_type().clone(),
+                        field.dict_id(),
+                        col,
+                        dictionaries,
+                    )
+                })
                 .collect::<Result<Vec<_>>>()?;
 
             let array = StructArray::from_data(data_type, values, validity);
             Ok(Arc::new(array))
         }
         Dictionary(key_type) => {
-            with_match_physical_dictionary_key_type!(key_type, |$T| {
+            match_integer_type!(key_type, |$T| {
                 to_dictionary::<$T>(data_type, dict_id.unwrap(), json_col, dictionaries)
             })
         }

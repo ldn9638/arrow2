@@ -23,7 +23,6 @@ pub struct BinaryArray<O: Offset> {
     offsets: Buffer<O>,
     values: Buffer<u8>,
     validity: Option<Bitmap>,
-    offset: usize,
 }
 
 // constructors
@@ -71,7 +70,6 @@ impl<O: Offset> BinaryArray<O> {
             offsets,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -113,7 +111,6 @@ impl<O: Offset> BinaryArray<O> {
             offsets,
             values,
             validity,
-            offset: 0,
         }
     }
 
@@ -146,7 +143,6 @@ impl<O: Offset> BinaryArray<O> {
             offsets,
             values: self.values.clone(),
             validity,
-            offset: self.offset + offset,
         }
     }
 
@@ -165,6 +161,12 @@ impl<O: Offset> BinaryArray<O> {
 
 // accessors
 impl<O: Offset> BinaryArray<O> {
+    /// Returns the length of this array
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
     /// Returns the element at index `i`
     /// # Panics
     /// iff `i >= self.len()`
@@ -215,7 +217,7 @@ impl<O: Offset> Array for BinaryArray<O> {
 
     #[inline]
     fn len(&self) -> usize {
-        self.offsets.len() - 1
+        self.len()
     }
 
     #[inline]

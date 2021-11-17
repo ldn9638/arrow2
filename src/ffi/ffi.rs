@@ -18,7 +18,7 @@
 use std::{ptr::NonNull, sync::Arc};
 
 use crate::{
-    array::{buffers_children_dictionary, Array},
+    array::{offset_buffers_children_dictionary, Array},
     bitmap::{utils::bytes_for, Bitmap},
     buffer::{
         bytes::{Bytes, Deallocation},
@@ -96,12 +96,12 @@ impl Ffi_ArrowArray {
     /// This method releases `buffers`. Consumers of this struct *must* call `release` before
     /// releasing this struct, or contents in `buffers` leak.
     pub(crate) fn new(array: Arc<dyn Array>) -> Self {
-        let (buffers, children, dictionary) = buffers_children_dictionary(array.as_ref());
+        let (offset, buffers, children, dictionary) =
+            offset_buffers_children_dictionary(array.as_ref());
 
         let buffers_ptr = buffers
             .iter()
             .map(|maybe_buffer| match maybe_buffer {
-                // note that `raw_data` takes into account the buffer's offset
                 Some(b) => b.as_ptr() as *const std::os::raw::c_void,
                 None => std::ptr::null(),
             })
@@ -130,7 +130,7 @@ impl Ffi_ArrowArray {
         Self {
             length,
             null_count,
-            offset: 0i64,
+            offset: offset as i64,
             n_buffers,
             n_children,
             buffers: private_data.buffers_ptr.as_mut_ptr(),
@@ -186,19 +186,20 @@ unsafe fn create_buffer<T: NativeType>(
     if array.buffers.is_null() {
         return Err(ArrowError::Ffi("The array buffers are null".to_string()));
     }
-    let buffers = array.buffers as *mut *const u8;
 
-    let len = buffer_len(array, data_type, index)?;
+    let buffers = array.buffers as *mut *const u8;
 
     assert!(index < array.n_buffers as usize);
     let ptr = *buffers.add(index);
-
     let ptr = NonNull::new(ptr as *mut T);
+
+    let len = buffer_len(array, data_type, index)?;
+    let offset = buffer_offset(array, data_type, index);
     let bytes = ptr
         .map(|ptr| Bytes::new(ptr, len, deallocation))
-        .ok_or_else(|| ArrowError::Ffi(format!("The buffer at position {} is null", index)));
+        .ok_or_else(|| ArrowError::Ffi(format!("The buffer at position {} is null", index)))?;
 
-    bytes.map(Buffer::from_bytes)
+    Ok(Buffer::from_bytes(bytes).slice(offset, len - offset))
 }
 
 /// returns a new buffer corresponding to the index `i` of the FFI array. It may not exist (null pointer).
@@ -217,12 +218,13 @@ unsafe fn create_bitmap(
         return Err(ArrowError::Ffi("The array buffers are null".to_string()));
     }
     let len = array.length as usize;
+    let offset = array.offset as usize;
     let buffers = array.buffers as *mut *const u8;
 
     assert!(index < array.n_buffers as usize);
     let ptr = *buffers.add(index);
 
-    let bytes_len = bytes_for(len);
+    let bytes_len = bytes_for(offset + len);
     let ptr = NonNull::new(ptr as *mut u8);
     let bytes = ptr
         .map(|ptr| Bytes::new(ptr, bytes_len, deallocation))
@@ -233,7 +235,15 @@ unsafe fn create_bitmap(
             ))
         })?;
 
-    Ok(Bitmap::from_bytes(bytes, len))
+    Ok(Bitmap::from_bytes(bytes, offset + len).slice(offset, len))
+}
+
+fn buffer_offset(array: &Ffi_ArrowArray, data_type: &DataType, i: usize) -> usize {
+    use PhysicalType::*;
+    match (data_type.to_physical_type(), i) {
+        (LargeUtf8, 2) | (LargeBinary, 2) | (Utf8, 2) | (Binary, 2) => 0,
+        _ => array.offset as usize,
+    }
 }
 
 /// Returns the length, in slots, of the buffer `i` (indexed according to the C data interface)
@@ -242,6 +252,20 @@ unsafe fn create_bitmap(
 // to fetch offset buffer's len to build the second buffer.
 fn buffer_len(array: &Ffi_ArrowArray, data_type: &DataType, i: usize) -> Result<usize> {
     Ok(match (data_type.to_physical_type(), i) {
+        (PhysicalType::FixedSizeBinary, 1) => {
+            if let DataType::FixedSizeBinary(size) = data_type.to_logical_type() {
+                *size * (array.offset as usize + array.length as usize)
+            } else {
+                unreachable!()
+            }
+        }
+        (PhysicalType::FixedSizeList, 1) => {
+            if let DataType::FixedSizeList(_, size) = data_type.to_logical_type() {
+                *size * (array.offset as usize + array.length as usize)
+            } else {
+                unreachable!()
+            }
+        }
         (PhysicalType::Utf8, 1)
         | (PhysicalType::LargeUtf8, 1)
         | (PhysicalType::Binary, 1)
@@ -250,7 +274,7 @@ fn buffer_len(array: &Ffi_ArrowArray, data_type: &DataType, i: usize) -> Result<
         | (PhysicalType::LargeList, 1)
         | (PhysicalType::Map, 1) => {
             // the len of the offset buffer (buffer 1) equals length + 1
-            array.length as usize + 1
+            array.offset as usize + array.length as usize + 1
         }
         (PhysicalType::Utf8, 2) | (PhysicalType::Binary, 2) => {
             // the len of the data buffer (buffer 2) equals the last value of the offset buffer (buffer 1)
@@ -260,6 +284,7 @@ fn buffer_len(array: &Ffi_ArrowArray, data_type: &DataType, i: usize) -> Result<
             // interpret as i32
             let offset_buffer = offset_buffer as *const i32;
             // get last offset
+
             (unsafe { *offset_buffer.add(len - 1) }) as usize
         }
         (PhysicalType::LargeUtf8, 2) | (PhysicalType::LargeBinary, 2) => {
@@ -273,7 +298,7 @@ fn buffer_len(array: &Ffi_ArrowArray, data_type: &DataType, i: usize) -> Result<
             (unsafe { *offset_buffer.add(len - 1) }) as usize
         }
         // buffer len of primitive types
-        _ => array.length as usize,
+        _ => array.offset as usize + array.length as usize,
     })
 }
 
@@ -310,7 +335,7 @@ fn create_dictionary(
     }
 }
 
-pub trait ArrowArrayRef {
+pub trait ArrowArrayRef: std::fmt::Debug {
     fn deallocation(&self) -> Deallocation {
         Deallocation::Foreign(self.parent().clone())
     }
@@ -333,12 +358,11 @@ pub trait ArrowArrayRef {
     /// The caller must guarantee that the buffer `index` corresponds to a bitmap.
     /// This function assumes that the bitmap created from FFI is valid; this is impossible to prove.
     unsafe fn buffer<T: NativeType>(&self, index: usize) -> Result<Buffer<T>> {
-        // +1 to ignore null bitmap
         create_buffer::<T>(
             self.array(),
             self.field().data_type(),
             self.deallocation(),
-            index + 1,
+            index,
         )
     }
 
@@ -347,16 +371,20 @@ pub trait ArrowArrayRef {
     /// This function assumes that the bitmap created from FFI is valid; this is impossible to prove.
     unsafe fn bitmap(&self, index: usize) -> Result<Bitmap> {
         // +1 to ignore null bitmap
-        create_bitmap(self.array(), self.deallocation(), index + 1)
+        create_bitmap(self.array(), self.deallocation(), index)
     }
 
-    fn child(&self, index: usize) -> Result<ArrowArrayChild> {
+    /// # Safety
+    /// The caller must guarantee that the child `index` is valid per c data interface.
+    unsafe fn child(&self, index: usize) -> Result<ArrowArrayChild> {
         create_child(self.array(), self.field(), self.parent().clone(), index)
     }
 
     fn dictionary(&self) -> Result<Option<ArrowArrayChild>> {
         create_dictionary(self.array(), self.field(), self.parent().clone())
     }
+
+    fn n_buffers(&self) -> usize;
 
     fn parent(&self) -> &Arc<ArrowArray>;
     fn array(&self) -> &Ffi_ArrowArray;
@@ -407,6 +435,10 @@ impl ArrowArrayRef for Arc<ArrowArray> {
     fn array(&self) -> &Ffi_ArrowArray {
         self.array.as_ref()
     }
+
+    fn n_buffers(&self) -> usize {
+        self.array.n_buffers as usize
+    }
 }
 
 #[derive(Debug)]
@@ -428,6 +460,10 @@ impl<'a> ArrowArrayRef for ArrowArrayChild<'a> {
 
     fn array(&self) -> &Ffi_ArrowArray {
         self.array
+    }
+
+    fn n_buffers(&self) -> usize {
+        self.array.n_buffers as usize
     }
 }
 

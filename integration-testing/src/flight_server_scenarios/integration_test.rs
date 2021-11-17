@@ -21,8 +21,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use arrow2::io::flight::{serialize_batch, serialize_schema};
-use arrow_format::flight::data::*;
 use arrow_format::flight::data::flight_descriptor::*;
+use arrow_format::flight::data::*;
 use arrow_format::flight::service::flight_service_server::*;
 use arrow_format::ipc::Message::{root_as_message, Message, MessageHeader};
 use arrow_format::ipc::Schema as ArrowSchema;
@@ -108,9 +108,9 @@ impl FlightService for FlightServiceImpl {
             .get(&key)
             .ok_or_else(|| Status::not_found(format!("Could not find flight. {}", key)))?;
 
-        let options = ipc::write::IpcWriteOptions::default();
+        let options = ipc::write::WriteOptions { compression: None };
 
-        let schema = std::iter::once(Ok(serialize_schema(&flight.schema, &options)));
+        let schema = std::iter::once(Ok(serialize_schema(&flight.schema)));
 
         let batches = flight
             .chunks
@@ -171,8 +171,7 @@ impl FlightService for FlightServiceImpl {
 
                 let total_records: usize = flight.chunks.iter().map(|chunk| chunk.num_rows()).sum();
 
-                let options = ipc::write::IpcWriteOptions::default();
-                let schema = serialize_schema_to_info(&flight.schema, &options).expect(
+                let schema = serialize_schema_to_info(&flight.schema).expect(
                     "Could not generate schema bytes from schema stored by a DoPut; \
                          this should be impossible",
                 );
@@ -276,7 +275,7 @@ async fn record_batch_from_message(
     message: Message<'_>,
     data_body: &[u8],
     schema_ref: Arc<Schema>,
-    dictionaries_by_field: &[Option<Arc<dyn Array>>],
+    dictionaries: &mut HashMap<usize, Arc<dyn Array>>,
 ) -> Result<RecordBatch, Status> {
     let ipc_batch = message
         .header_as_record_batch()
@@ -289,7 +288,7 @@ async fn record_batch_from_message(
         schema_ref,
         None,
         true,
-        dictionaries_by_field,
+        dictionaries,
         ArrowSchema::MetadataVersion::V5,
         &mut reader,
         0,
@@ -303,7 +302,7 @@ async fn dictionary_from_message(
     message: Message<'_>,
     data_body: &[u8],
     schema_ref: Arc<Schema>,
-    dictionaries_by_field: &mut [Option<Arc<dyn Array>>],
+    dictionaries: &mut HashMap<usize, Arc<dyn Array>>,
 ) -> Result<(), Status> {
     let ipc_batch = message
         .header_as_dictionary_batch()
@@ -311,14 +310,8 @@ async fn dictionary_from_message(
 
     let mut reader = std::io::Cursor::new(data_body);
 
-    let dictionary_batch_result = ipc::read::read_dictionary(
-        ipc_batch,
-        &schema_ref,
-        true,
-        dictionaries_by_field,
-        &mut reader,
-        0,
-    );
+    let dictionary_batch_result =
+        ipc::read::read_dictionary(ipc_batch, &schema_ref, true, dictionaries, &mut reader, 0);
     dictionary_batch_result
         .map_err(|e| Status::internal(format!("Could not convert to Dictionary: {:?}", e)))
 }
@@ -334,7 +327,7 @@ async fn save_uploaded_chunks(
     let mut chunks = vec![];
     let mut uploaded_chunks = uploaded_chunks.lock().await;
 
-    let mut dictionaries_by_field = vec![None; schema_ref.fields().len()];
+    let mut dictionaries = Default::default();
 
     while let Some(Ok(data)) = input_stream.next().await {
         let message = root_as_message(&data.data_header[..])
@@ -353,7 +346,7 @@ async fn save_uploaded_chunks(
                     message,
                     &data.data_body,
                     schema_ref.clone(),
-                    &dictionaries_by_field,
+                    &mut dictionaries,
                 )
                 .await?;
 
@@ -364,7 +357,7 @@ async fn save_uploaded_chunks(
                     message,
                     &data.data_body,
                     schema_ref.clone(),
-                    &mut dictionaries_by_field,
+                    &mut dictionaries,
                 )
                 .await?;
             }

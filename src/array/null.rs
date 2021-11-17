@@ -1,13 +1,16 @@
 use crate::{bitmap::Bitmap, datatypes::DataType};
 
-use super::{ffi::ToFfi, Array};
+use crate::{
+    array::{Array, FromFfi, ToFfi},
+    error::Result,
+    ffi,
+};
 
 /// The concrete [`Array`] of [`DataType::Null`].
 #[derive(Debug, Clone)]
 pub struct NullArray {
     data_type: DataType,
     length: usize,
-    offset: usize,
 }
 
 impl NullArray {
@@ -23,20 +26,20 @@ impl NullArray {
 
     /// Returns a new [`NullArray`].
     pub fn from_data(data_type: DataType, length: usize) -> Self {
-        Self {
-            data_type,
-            length,
-            offset: 0,
-        }
+        Self { data_type, length }
     }
 
     /// Returns a slice of the [`NullArray`].
-    pub fn slice(&self, offset: usize, length: usize) -> Self {
+    pub fn slice(&self, _offset: usize, length: usize) -> Self {
         Self {
             data_type: self.data_type.clone(),
             length,
-            offset: self.offset + offset,
         }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.length
     }
 }
 
@@ -48,7 +51,7 @@ impl Array for NullArray {
 
     #[inline]
     fn len(&self) -> usize {
-        self.length
+        self.len()
     }
 
     #[inline]
@@ -82,8 +85,18 @@ unsafe impl ToFfi for NullArray {
         vec![]
     }
 
-    #[inline]
-    fn offset(&self) -> usize {
-        self.offset
+    fn offset(&self) -> Option<usize> {
+        Some(0)
+    }
+
+    fn to_ffi_aligned(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl<A: ffi::ArrowArrayRef> FromFfi<A> for NullArray {
+    unsafe fn try_from_ffi(array: A) -> Result<Self> {
+        let data_type = array.field().data_type().clone();
+        Ok(Self::from_data(data_type, array.array().len()))
     }
 }

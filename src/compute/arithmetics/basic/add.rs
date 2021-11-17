@@ -10,7 +10,7 @@ use crate::{
     bitmap::Bitmap,
     compute::{
         arithmetics::{
-            ArrayAdd, ArrayCheckedAdd, ArrayOverflowingAdd, ArraySaturatingAdd, NotI128,
+            ArrayAdd, ArrayCheckedAdd, ArrayOverflowingAdd, ArraySaturatingAdd, NativeArithmetics,
         },
         arity::{
             binary, binary_checked, binary_with_bitmap, unary, unary_checked, unary_with_bitmap,
@@ -87,7 +87,7 @@ where
 /// ```
 pub fn checked_add<T>(lhs: &PrimitiveArray<T>, rhs: &PrimitiveArray<T>) -> Result<PrimitiveArray<T>>
 where
-    T: NativeType + CheckedAdd<Output = T> + Zero,
+    T: NativeType + CheckedAdd<Output = T>,
 {
     check_same_type(lhs, rhs)?;
 
@@ -158,22 +158,18 @@ where
 // Implementation of ArrayAdd trait for PrimitiveArrays
 impl<T> ArrayAdd<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + Add<Output = T> + NotI128,
+    T: NativeArithmetics + Add<Output = T>,
 {
-    type Output = Self;
-
-    fn add(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn add(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         add(self, rhs)
     }
 }
 
 impl<T> ArrayWrappingAdd<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + WrappingAdd<Output = T> + NotI128,
+    T: NativeArithmetics + WrappingAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn wrapping_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn wrapping_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         wrapping_add(self, rhs)
     }
 }
@@ -181,11 +177,9 @@ where
 // Implementation of ArrayCheckedAdd trait for PrimitiveArrays
 impl<T> ArrayCheckedAdd<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedAdd<Output = T> + Zero + NotI128,
+    T: NativeArithmetics + CheckedAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn checked_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn checked_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         checked_add(self, rhs)
     }
 }
@@ -193,11 +187,9 @@ where
 // Implementation of ArraySaturatingAdd trait for PrimitiveArrays
 impl<T> ArraySaturatingAdd<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + SaturatingAdd<Output = T> + NotI128,
+    T: NativeArithmetics + SaturatingAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn saturating_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self::Output> {
+    fn saturating_add(&self, rhs: &PrimitiveArray<T>) -> Result<Self> {
         saturating_add(self, rhs)
     }
 }
@@ -205,11 +197,9 @@ where
 // Implementation of ArraySaturatingAdd trait for PrimitiveArrays
 impl<T> ArrayOverflowingAdd<PrimitiveArray<T>> for PrimitiveArray<T>
 where
-    T: NativeType + OverflowingAdd<Output = T> + NotI128,
+    T: NativeArithmetics + OverflowingAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn overflowing_add(&self, rhs: &PrimitiveArray<T>) -> Result<(Self::Output, Bitmap)> {
+    fn overflowing_add(&self, rhs: &PrimitiveArray<T>) -> Result<(Self, Bitmap)> {
         overflowing_add(self, rhs)
     }
 }
@@ -271,7 +261,7 @@ where
 /// ```
 pub fn checked_add_scalar<T>(lhs: &PrimitiveArray<T>, rhs: &T) -> PrimitiveArray<T>
 where
-    T: NativeType + CheckedAdd<Output = T> + Zero,
+    T: NativeType + CheckedAdd<Output = T>,
 {
     let rhs = *rhs;
     let op = move |a: T| a.checked_add(&rhs);
@@ -331,11 +321,9 @@ where
 // Implementation of ArrayAdd trait for PrimitiveArrays with a scalar
 impl<T> ArrayAdd<T> for PrimitiveArray<T>
 where
-    T: NativeType + Add<Output = T> + NotI128,
+    T: NativeArithmetics + Add<Output = T>,
 {
-    type Output = Self;
-
-    fn add(&self, rhs: &T) -> Result<Self::Output> {
+    fn add(&self, rhs: &T) -> Result<Self> {
         Ok(add_scalar(self, rhs))
     }
 }
@@ -343,11 +331,9 @@ where
 // Implementation of ArrayCheckedAdd trait for PrimitiveArrays with a scalar
 impl<T> ArrayCheckedAdd<T> for PrimitiveArray<T>
 where
-    T: NativeType + CheckedAdd<Output = T> + Zero + NotI128,
+    T: NativeArithmetics + CheckedAdd<Output = T> + Zero,
 {
-    type Output = Self;
-
-    fn checked_add(&self, rhs: &T) -> Result<Self::Output> {
+    fn checked_add(&self, rhs: &T) -> Result<Self> {
         Ok(checked_add_scalar(self, rhs))
     }
 }
@@ -355,11 +341,9 @@ where
 // Implementation of ArraySaturatingAdd trait for PrimitiveArrays with a scalar
 impl<T> ArraySaturatingAdd<T> for PrimitiveArray<T>
 where
-    T: NativeType + SaturatingAdd<Output = T> + NotI128,
+    T: NativeArithmetics + SaturatingAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn saturating_add(&self, rhs: &T) -> Result<Self::Output> {
+    fn saturating_add(&self, rhs: &T) -> Result<Self> {
         Ok(saturating_add_scalar(self, rhs))
     }
 }
@@ -367,11 +351,9 @@ where
 // Implementation of ArraySaturatingAdd trait for PrimitiveArrays with a scalar
 impl<T> ArrayOverflowingAdd<T> for PrimitiveArray<T>
 where
-    T: NativeType + OverflowingAdd<Output = T> + NotI128,
+    T: NativeArithmetics + OverflowingAdd<Output = T>,
 {
-    type Output = Self;
-
-    fn overflowing_add(&self, rhs: &T) -> Result<(Self::Output, Bitmap)> {
+    fn overflowing_add(&self, rhs: &T) -> Result<(Self, Bitmap)> {
         Ok(overflowing_add_scalar(self, rhs))
     }
 }
