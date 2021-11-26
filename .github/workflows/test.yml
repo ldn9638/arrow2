@@ -126,8 +126,8 @@ jobs:
         run: cargo install cargo-tarpaulin
       - name: Run coverage
         run: |
-          cargo tarpaulin --features cache_aligned --out Xml
-          cargo tarpaulin --features full --out Xml
+          cargo tarpaulin --features cache_aligned --ignore-tests --out Xml
+          cargo tarpaulin --features full --ignore-tests --out Xml
       - name: Report coverage
         continue-on-error: true
         run: bash <(curl -s https://codecov.io/bash)
@@ -171,7 +171,7 @@ jobs:
         with:
           use-cross: true
           command: check
-          args: --features=merge_sort,io_ipc,io_csv,io_print,io_json,io_parquet --target ${{ matrix.target }}
+          args: --features=compute_merge_sort,io_ipc,io_csv,io_print,io_json,io_parquet --target ${{ matrix.target }}
 
   linux-simd-test:
     name: SIMD

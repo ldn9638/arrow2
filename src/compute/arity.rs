@@ -1,7 +1,6 @@
 //! Defines kernels suitable to perform operations to primitive arrays.
 
-use super::utils::combine_validities;
-use crate::compute::arithmetics::basic::check_same_len;
+use super::utils::{check_same_len, combine_validities};
 use crate::{
     array::PrimitiveArray,
     bitmap::{Bitmap, MutableBitmap},
@@ -140,13 +139,13 @@ pub fn binary<T, D, F>(
     rhs: &PrimitiveArray<D>,
     data_type: DataType,
     op: F,
-) -> Result<PrimitiveArray<T>>
+) -> PrimitiveArray<T>
 where
     T: NativeType,
     D: NativeType,
     F: Fn(T, D) -> T,
 {
-    check_same_len(lhs, rhs)?;
+    check_same_len(lhs, rhs).unwrap();
 
     let validity = combine_validities(lhs.validity(), rhs.validity());
 
@@ -157,7 +156,7 @@ where
         .map(|(l, r)| op(*l, *r));
     let values = Buffer::from_trusted_len_iter(values);
 
-    Ok(PrimitiveArray::<T>::from_data(data_type, values, validity))
+    PrimitiveArray::<T>::from_data(data_type, values, validity)
 }
 
 /// Version of binary that checks for errors in the closure used to create the
@@ -195,13 +194,13 @@ pub fn binary_with_bitmap<T, D, F>(
     rhs: &PrimitiveArray<D>,
     data_type: DataType,
     op: F,
-) -> Result<(PrimitiveArray<T>, Bitmap)>
+) -> (PrimitiveArray<T>, Bitmap)
 where
     T: NativeType,
     D: NativeType,
     F: Fn(T, D) -> (T, bool),
 {
-    check_same_len(lhs, rhs)?;
+    check_same_len(lhs, rhs).unwrap();
 
     let validity = combine_validities(lhs.validity(), rhs.validity());
 
@@ -215,10 +214,10 @@ where
 
     let values = Buffer::from_trusted_len_iter(values);
 
-    Ok((
+    (
         PrimitiveArray::<T>::from_data(data_type, values, validity),
         mut_bitmap.into(),
-    ))
+    )
 }
 
 /// Version of binary that creates a mutable bitmap that is used to keep track
@@ -229,13 +228,13 @@ pub fn binary_checked<T, D, F>(
     rhs: &PrimitiveArray<D>,
     data_type: DataType,
     op: F,
-) -> Result<PrimitiveArray<T>>
+) -> PrimitiveArray<T>
 where
     T: NativeType,
     D: NativeType,
     F: Fn(T, D) -> Option<T>,
 {
-    check_same_len(lhs, rhs)?;
+    check_same_len(lhs, rhs).unwrap();
 
     let mut mut_bitmap = MutableBitmap::with_capacity(lhs.len());
 
@@ -265,5 +264,5 @@ where
     // as Null
     let validity = combine_validities(validity.as_ref(), Some(&bitmap));
 
-    Ok(PrimitiveArray::<T>::from_data(data_type, values, validity))
+    PrimitiveArray::<T>::from_data(data_type, values, validity)
 }
