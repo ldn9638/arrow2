@@ -1,6 +1,6 @@
 [package]
 name = "arrow2"
-version = "0.7.0"
+version = "0.8.1"
 license = "Apache-2.0"
 description = "Unofficial implementation of Apache Arrow spec in safe Rust"
 homepage = "https://github.com/jorgecarleitao/arrow2"
@@ -117,7 +117,7 @@ full = [
     "regex",
     "compute",
     # parses timezones used in timestamp conversions
-    "chrono-tz"
+    "chrono-tz",
 ]
 io_csv = ["io_csv_read", "io_csv_write"]
 io_csv_async = ["io_csv_read_async"]
@@ -152,7 +152,7 @@ compute_arithmetics = ["strength_reduce"]
 compute_bitwise = []
 compute_boolean = []
 compute_boolean_kleene = []
-compute_cast = ["lexical-core"]
+compute_cast = ["lexical-core", "compute_take"]
 compute_comparison = []
 compute_concatenate = []
 compute_contains = []

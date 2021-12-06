@@ -30,21 +30,21 @@ fn decompress_block(
         #[cfg(feature = "io_avro_compression")]
         Some(Compression::Snappy) => {
             let len = snap::raw::decompress_len(&block[..block.len() - 4])
-                .map_err(|_| ArrowError::Other("Failed to decompress snap".to_string()))?;
+                .map_err(|_| ArrowError::ExternalFormat("Failed to decompress snap".to_string()))?;
             decompress.clear();
             decompress.resize(len, 0);
             snap::raw::Decoder::new()
                 .decompress(&block[..block.len() - 4], decompress)
-                .map_err(|_| ArrowError::Other("Failed to decompress snap".to_string()))?;
+                .map_err(|_| ArrowError::ExternalFormat("Failed to decompress snap".to_string()))?;
             Ok(false)
         }
         #[cfg(not(feature = "io_avro_compression"))]
-        Some(Compression::Deflate) => Err(ArrowError::Other(
+        Some(Compression::Deflate) => Err(ArrowError::InvalidArgumentError(
             "The avro file is deflate-encoded but feature 'io_avro_compression' is not active."
                 .to_string(),
         )),
         #[cfg(not(feature = "io_avro_compression"))]
-        Some(Compression::Snappy) => Err(ArrowError::Other(
+        Some(Compression::Snappy) => Err(ArrowError::InvalidArgumentError(
             "The avro file is snappy-encoded but feature 'io_avro_compression' is not active."
                 .to_string(),
         )),

@@ -24,9 +24,10 @@ use super::Field;
 /// An ordered sequence of [`Field`] with optional metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
-    pub(crate) fields: Vec<Field>,
+    /// The fields composing this schema.
+    pub fields: Vec<Field>,
     /// A map of key-value pairs containing additional meta data.
-    pub(crate) metadata: HashMap<String, String>,
+    pub metadata: HashMap<String, String>,
 }
 
 impl Schema {
@@ -120,7 +121,7 @@ impl Schema {
                     // merge metadata
                     if let Some(old_val) = merged.metadata.get(&key) {
                         if old_val != &value {
-                            return Err(ArrowError::Schema(
+                            return Err(ArrowError::InvalidArgumentError(
                                 "Fail to merge schema due to conflicting metadata.".to_string(),
                             ));
                         }

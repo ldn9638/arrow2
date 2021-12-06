@@ -240,68 +240,69 @@ macro_rules! compare_scalar {
             Boolean => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<BooleanScalar>().unwrap();
-                boolean::$op(lhs, rhs.value())
+                // validity checked above
+                boolean::$op(lhs, rhs.value().unwrap())
             }
             Int8 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<i8>>().unwrap();
-                primitive::$op::<i8>(lhs, rhs.value())
+                primitive::$op::<i8>(lhs, rhs.value().unwrap())
             }
             Int16 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<i16>>().unwrap();
-                primitive::$op::<i16>(lhs, rhs.value())
+                primitive::$op::<i16>(lhs, rhs.value().unwrap())
             }
             Int32 | Date32 | Time32(_) | Interval(IntervalUnit::YearMonth) => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<i32>>().unwrap();
-                primitive::$op::<i32>(lhs, rhs.value())
+                primitive::$op::<i32>(lhs, rhs.value().unwrap())
             }
             Int64 | Timestamp(_, _) | Date64 | Time64(_) | Duration(_) => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<i64>>().unwrap();
-                primitive::$op::<i64>(lhs, rhs.value())
+                primitive::$op::<i64>(lhs, rhs.value().unwrap())
             }
             UInt8 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<u8>>().unwrap();
-                primitive::$op::<u8>(lhs, rhs.value())
+                primitive::$op::<u8>(lhs, rhs.value().unwrap())
             }
             UInt16 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<u16>>().unwrap();
-                primitive::$op::<u16>(lhs, rhs.value())
+                primitive::$op::<u16>(lhs, rhs.value().unwrap())
             }
             UInt32 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<u32>>().unwrap();
-                primitive::$op::<u32>(lhs, rhs.value())
+                primitive::$op::<u32>(lhs, rhs.value().unwrap())
             }
             UInt64 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<u64>>().unwrap();
-                primitive::$op::<u64>(lhs, rhs.value())
+                primitive::$op::<u64>(lhs, rhs.value().unwrap())
             }
             Float16 => unreachable!(),
             Float32 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<f32>>().unwrap();
-                primitive::$op::<f32>(lhs, rhs.value())
+                primitive::$op::<f32>(lhs, rhs.value().unwrap())
             }
             Float64 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<PrimitiveScalar<f64>>().unwrap();
-                primitive::$op::<f64>(lhs, rhs.value())
+                primitive::$op::<f64>(lhs, rhs.value().unwrap())
             }
             Utf8 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<Utf8Scalar<i32>>().unwrap();
-                utf8::$op::<i32>(lhs, rhs.value())
+                utf8::$op::<i32>(lhs, rhs.value().unwrap())
             }
             LargeUtf8 => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<Utf8Scalar<i64>>().unwrap();
-                utf8::$op::<i64>(lhs, rhs.value())
+                utf8::$op::<i64>(lhs, rhs.value().unwrap())
             }
             Decimal(_, _) => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
@@ -309,17 +310,17 @@ macro_rules! compare_scalar {
                     .as_any()
                     .downcast_ref::<PrimitiveScalar<i128>>()
                     .unwrap();
-                primitive::$op::<i128>(lhs, rhs.value())
+                primitive::$op::<i128>(lhs, rhs.value().unwrap())
             }
             Binary => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<BinaryScalar<i32>>().unwrap();
-                binary::$op::<i32>(lhs, rhs.value())
+                binary::$op::<i32>(lhs, rhs.value().unwrap())
             }
             LargeBinary => {
                 let lhs = lhs.as_any().downcast_ref().unwrap();
                 let rhs = rhs.as_any().downcast_ref::<BinaryScalar<i64>>().unwrap();
-                binary::$op::<i64>(lhs, rhs.value())
+                binary::$op::<i64>(lhs, rhs.value().unwrap())
             }
             _ => todo!("Comparisons of {:?} are not yet supported", data_type),
         }
