@@ -50,7 +50,8 @@ def case_basic_nullable(size=1):
 
 
 def case_basic_required(size=1):
-    int64 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    int64 = [-256, -1, 0, 1, 2, 3, 4, 5, 6, 7]
+    uint32 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     float64 = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
     string = ["Hello", "bbb", "aa", "", "bbb", "abc", "bbb", "bbb", "def", "aaa"]
     boolean = [True, True, False, False, False, True, True, True, True, True]
@@ -82,7 +83,7 @@ def case_basic_required(size=1):
             "string": string * size,
             "bool": boolean * size,
             "date": int64 * size,
-            "uint32": int64 * size,
+            "uint32": uint32 * size,
             "decimal_9": decimal * size,
             "decimal_18": decimal * size,
             "decimal_26": decimal * size,
@@ -232,7 +233,7 @@ def write_pyarrow(
     page_version: int,
     use_dictionary: bool,
     multiple_pages: bool,
-    compression: bool,
+    compression: str,
 ):
     data, schema, path = case(size)
 
@@ -244,12 +245,7 @@ def write_pyarrow(
         base_path = f"{base_path}/multi"
 
     if compression:
-        base_path = f"{base_path}/snappy"
-
-    if compression:
-        compression = "snappy"
-    else:
-        compression = None
+        base_path = f"{base_path}/{compression}"
 
     if multiple_pages:
         data_page_size = 2 ** 10  # i.e. a small number to ensure multiple pages
@@ -273,7 +269,8 @@ def write_pyarrow(
 for case in [case_basic_nullable, case_basic_required, case_nested, case_struct]:
     for version in [1, 2]:
         for use_dict in [True, False]:
-            write_pyarrow(case, 1, version, use_dict, False, False)
+            for compression in ["lz4", None, "snappy"]:
+                write_pyarrow(case, 1, version, use_dict, False, compression)
 
 
 def case_benches(size):
@@ -284,15 +281,25 @@ def case_benches(size):
     return data, schema, f"benches_{size}.parquet"
 
 
+def case_benches_required(size):
+    assert size % 8 == 0
+    data, schema, _ = case_basic_required(1)
+    for k in data:
+        data[k] = data[k][:8] * (size // 8)
+    return data, schema, f"benches_required_{size}.parquet"
+
+
 # for read benchmarks
 for i in range(10, 22, 2):
     # two pages (dict)
-    write_pyarrow(case_benches, 2 ** i, 1, True, False, False)
+    write_pyarrow(case_benches, 2 ** i, 1, True, False, None)
     # single page
-    write_pyarrow(case_benches, 2 ** i, 1, False, False, False)
+    write_pyarrow(case_benches, 2 ** i, 1, False, False, None)
+    # single page required
+    write_pyarrow(case_benches_required, 2 ** i, 1, False, False, None)
     # multiple pages
-    write_pyarrow(case_benches, 2 ** i, 1, False, True, False)
+    write_pyarrow(case_benches, 2 ** i, 1, False, True, None)
     # multiple compressed pages
-    write_pyarrow(case_benches, 2 ** i, 1, False, True, True)
+    write_pyarrow(case_benches, 2 ** i, 1, False, True, "snappy")
     # single compressed page
-    write_pyarrow(case_benches, 2 ** i, 1, False, False, True)
+    write_pyarrow(case_benches, 2 ** i, 1, False, False, "snappy")
